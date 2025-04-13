@@ -104,7 +104,9 @@ Be concise and only include the JSON in your response."""
         }
 
 
-def detect_data_manipulation(client, data_path, output_dir=None, paper_path=None):
+def detect_data_manipulation(
+    client, data_path, output_dir=None, paper_path=None, use_claude_segmentation=False
+):
     """Detect potential data manipulation in research data.
 
     Args:
@@ -112,6 +114,7 @@ def detect_data_manipulation(client, data_path, output_dir=None, paper_path=None
         data_path: Path to the dataset file
         output_dir: Directory to save output files
         paper_path: Optional path to research paper PDF for context
+        use_claude_segmentation: Whether to use Claude to analyze data in segments
     """
     print(f"Analyzing data file: {data_path}")
     if paper_path:
@@ -207,7 +210,7 @@ def detect_data_manipulation(client, data_path, output_dir=None, paper_path=None
                         findings.append(
                             {"type": "excel_row_movement", "details": movement_evidence}
                         )
-                        print(f"Found evidence of row movement in Excel file")
+                        print("Found evidence of row movement in Excel file")
 
             # Check if suspicious observations show strong effect in the expected direction
             if column_categories["outcome_columns"]:
@@ -237,6 +240,47 @@ def detect_data_manipulation(client, data_path, output_dir=None, paper_path=None
         if duplicate_ids:
             findings.append({"type": "duplicate_ids", "details": duplicate_ids})
             print(f"Found {len(duplicate_ids)} duplicate IDs")
+
+    # Use Claude to analyze data in segments if requested
+    claude_segment_findings = []
+    if use_claude_segmentation:
+        print("Starting dataset segmentation and Claude-based anomaly detection...")
+        claude_segment_findings = forensics.segment_and_analyze_with_claude(client)
+
+        # Add a summary of Claude's segment analysis to findings
+        if claude_segment_findings:
+            # Filter out non-dictionary items and count high-confidence anomalies
+            valid_findings = [f for f in claude_segment_findings if isinstance(f, dict)]
+            anomaly_chunks = [
+                f
+                for f in valid_findings
+                if f.get("anomalies_detected", False) and f.get("confidence", 0) >= 7
+            ]
+
+            if anomaly_chunks:
+                total_anomalies = 0
+                anomaly_types = set()
+                for chunk in anomaly_chunks:
+                    if "findings" in chunk:
+                        total_anomalies += len(chunk["findings"])
+                        for finding in chunk["findings"]:
+                            if "type" in finding:
+                                anomaly_types.add(finding["type"])
+
+                print(
+                    f"Claude detected {total_anomalies} high-confidence anomalies across {len(anomaly_chunks)} chunks"
+                )
+                findings.append(
+                    {
+                        "type": "claude_chunk_analysis",
+                        "details": {
+                            "anomaly_chunks": len(anomaly_chunks),
+                            "total_anomalies": total_anomalies,
+                            "anomaly_types": list(anomaly_types),
+                            "total_chunks": len(claude_segment_findings),
+                        },
+                    }
+                )
 
     # Generate Claude prompt with findings
     findings_json = json.dumps(findings, indent=2)
@@ -332,23 +376,57 @@ Based on these findings:
 4. Discuss the patterns in the suspicious observations - do they show a particularly strong effect?
 5. Provide a detailed explanation of why these patterns are unlikely to occur naturally
 
-Reference: The article "Data Colada" describes a case where researchers found evidence of manipulation in a dataset about dishonesty research. They found:
-- Rows that were out of order when sorted by ID within experimental conditions
-- Evidence in Excel's calcChain.xml showing rows had been moved between conditions
-- The suspicious observations showed extremely strong effects in the predicted direction
+Reference: Research on data manipulation detection has identified several patterns that may indicate fabrication:
+
+1. Structural evidence:
+   - Rows that are out of order when sorted by ID within experimental conditions
+   - Evidence in Excel's calcChain.xml showing rows had been moved between conditions
+   - Duplicate IDs where identical observations appear in multiple conditions
+
+2. Statistical anomalies:
+   - Terminal digit anomalies (non-uniform distribution of last digits)
+   - Variance anomalies (suspiciously low variance in certain groups)
+   - Excessive repetition of digit patterns
+   - Too many "inliers" (values clustered unnaturally close to means)
+   - Perfect linear sequences or progressions
+   - Suspicious observations showing extremely strong effects in the predicted direction
 
 If I provided a research paper, use its context to guide your analysis about what kinds of effects or patterns would be considered suspicious for this specific research domain.
 
 Your assessment:"""
 
     print("Generating forensic analysis with Claude...")
-    response = client.messages.create(
-        model="claude-3-7-sonnet-latest",
-        max_tokens=4096,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        response = client.messages.create(
+            model="claude-3-7-sonnet-latest",
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
+        )
 
-    analysis = response.content[0].text
+        analysis = response.content[0].text
+    except Exception as e:
+        import traceback
+
+        error_details = traceback.format_exc()
+
+        # Create a highly visible error message in the server logs
+        error_msg = f"CRITICAL: Claude API call failed: {str(e)}"
+        error_box = "#" * len(error_msg)
+        print(f"\n{error_box}\n{error_msg}\n{error_box}\n")
+        print(f"ERROR DETAILS:\n{error_details}")
+
+        # Provide a fallback analysis
+        analysis = f"""
+MANIPULATION_RATING: 5
+
+⚠️ **API Error: Could not get final analysis from Claude**
+
+There was an error communicating with the Claude API: {str(e)}
+
+However, the preliminary analysis has been completed and can be reviewed in the Technical Findings section. I've assigned a neutral manipulation rating (5/10) since the final analysis could not be completed.
+
+Please review the technical findings and visualizations to make your own assessment of the data. If the error persists, please contact support.
+"""
 
     # Generate report
     report = f"""# Data Forensics Report: {os.path.basename(data_path)}
@@ -366,6 +444,106 @@ Your assessment:"""
 ## Claude's Analysis
 {analysis}
 """
+
+    # Add Claude's segment analysis if available
+    if claude_segment_findings:
+        segment_report = "\n## Claude Segment Analysis\n\n"
+        segment_report += "Claude analyzed the dataset in segments to identify potential anomalies.\n\n"
+
+        # Sanitize the findings to ensure we only have dictionaries
+        sanitized_findings = []
+        for f in claude_segment_findings:
+            if not isinstance(f, dict):
+                print(
+                    f"WARNING: Found non-dictionary item in claude_segment_findings: {type(f)}: {str(f)[:100]}"
+                )
+                # Convert to error dictionary
+                sanitized_findings.append(
+                    {
+                        "error": f"Invalid finding type: {type(f)}",
+                        "raw_data": str(f)[:200]
+                        if isinstance(f, str)
+                        else "Non-string type",
+                    }
+                )
+            else:
+                sanitized_findings.append(f)
+
+        # Check for any error results
+        error_chunks = [
+            f for f in sanitized_findings if isinstance(f, dict) and "error" in f
+        ]
+        if error_chunks:
+            segment_report += f"⚠️ **Note:** {len(error_chunks)} of {len(sanitized_findings)} chunks had errors during processing.\n\n"
+
+        # Add summary (filter out error chunks for anomaly detection)
+        valid_chunks = [
+            f for f in sanitized_findings if isinstance(f, dict) and "error" not in f
+        ]
+        anomaly_chunks = [
+            f
+            for f in valid_chunks
+            if isinstance(f, dict) and f.get("anomalies_detected", False)
+        ]
+        high_confidence_chunks = [
+            f
+            for f in anomaly_chunks
+            if isinstance(f, dict) and f.get("confidence", 0) >= 7
+        ]
+
+        segment_report += f"- Total segments analyzed: {len(sanitized_findings)}\n"
+        segment_report += f"- Segments with anomalies: {len(anomaly_chunks)}\n"
+        segment_report += f"- Segments with high-confidence anomalies: {len(high_confidence_chunks)}\n\n"
+
+        # Add details for high-confidence findings
+        if high_confidence_chunks:
+            segment_report += "### High Confidence Anomalies\n\n"
+
+            for i, chunk in enumerate(high_confidence_chunks):
+                chunk_idx = chunk.get("chunk", i + 1)
+                confidence = chunk.get("confidence", "N/A")
+                explanation = chunk.get("explanation", "No explanation provided")
+
+                segment_report += (
+                    f"#### Segment {chunk_idx} (Confidence: {confidence}/10)\n\n"
+                )
+                segment_report += f"{explanation}\n\n"
+
+                if "findings" in chunk and chunk["findings"]:
+                    segment_report += "Specific findings:\n\n"
+                    for j, finding in enumerate(chunk["findings"]):
+                        f_type = finding.get("type", "Unknown")
+                        f_desc = finding.get("description", "No description")
+                        f_sev = finding.get("severity", "N/A")
+                        f_cols = ", ".join(finding.get("columns_involved", ["Unknown"]))
+
+                        segment_report += (
+                            f"**Finding {j + 1}**: {f_type} (Severity: {f_sev}/10)\n"
+                        )
+                        segment_report += f"- Description: {f_desc}\n"
+                        segment_report += f"- Columns involved: {f_cols}\n"
+
+                        if "row_indices" in finding and finding["row_indices"]:
+                            if len(finding["row_indices"]) <= 10:
+                                row_str = ", ".join(
+                                    str(r) for r in finding["row_indices"]
+                                )
+                            else:
+                                first_5 = ", ".join(
+                                    str(r) for r in finding["row_indices"][:5]
+                                )
+                                last_5 = ", ".join(
+                                    str(r) for r in finding["row_indices"][-5:]
+                                )
+                                row_str = f"{first_5}, ... ({len(finding['row_indices']) - 10} more rows) ..., {last_5}"
+
+                            segment_report += f"- Rows affected: {row_str}\n"
+
+                        segment_report += "\n"
+
+                segment_report += "---\n\n"
+
+        report += segment_report
 
     # Create visualizations if we have suspicious rows
     plots = []

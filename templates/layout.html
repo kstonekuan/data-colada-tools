@@ -105,6 +105,12 @@
             border: 1px solid #eaeaea;
             border-radius: 5px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            cursor: pointer;
+            transition: max-width 0.3s ease;
+        }
+        
+        .markdown-body img[data-expanded="true"] {
+            max-width: 100%;
         }
         pre {
             background-color: #f8f9fa;
@@ -224,6 +230,11 @@
             background-color: rgba(108, 117, 125, 0.1); /* Light gray background */
         }
         
+        /* Claude AI detected anomalies */
+        .claude-anomaly {
+            background-color: rgba(111, 66, 193, 0.1); /* Light purple background */
+        }
+        
         /* Cell specific highlights - using borders */
         .cell-highlight-sorting {
             border: 2px solid #dc3545 !important; /* Red border */
@@ -323,10 +334,60 @@
             color: #6c757d;
         }
         
+        .cell-highlight-claude {
+            border: 2px solid #6f42c1 !important; /* Purple border */
+            font-weight: bold;
+            position: relative;
+        }
+        
+        .cell-highlight-claude::before {
+            content: "⨁";
+            color: #6f42c1;
+            position: absolute;
+            top: 0;
+            right: 0;
+            font-size: 10px;
+            padding: 1px;
+        }
+        
+        /* Claude AI row highlights with borders */
+        tr.claude-anomaly td {
+            border-top: 2px solid #6f42c1 !important;
+            border-bottom: 2px solid #6f42c1 !important;
+        }
+        tr.claude-anomaly td:first-child {
+            border-left: 2px solid #6f42c1 !important;
+        }
+        tr.claude-anomaly td:last-child {
+            border-right: 2px solid #6f42c1 !important;
+        }
+        
         /* Make suspicious rows stand out more */
         .suspicious-row {
             position: relative;
             z-index: 1;
+        }
+        
+        /* Full Dataset Table Styles */
+        #raw-data-table {
+            width: 100%;
+            font-size: 0.9rem;
+        }
+        
+        #raw-data-table thead th {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background-color: #343a40;
+            color: white;
+        }
+        
+        .raw-data-container {
+            max-height: 80vh;
+        }
+        
+        #data-search {
+            min-width: 250px;
         }
     </style>
 </head>

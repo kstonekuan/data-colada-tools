@@ -1,24 +1,15 @@
 #!/usr/bin/env python3
 import datetime
 import json
+import logging
 import os
 import re
+import sys
 import uuid
 
 import matplotlib
+import numpy as np
 import pandas as pd
-
-# Try to import markdown, fallback to basic HTML conversion if not available
-try:
-    import markdown
-
-    HAS_MARKDOWN = True
-except ImportError:
-    HAS_MARKDOWN = False
-
-# Use non-interactive backend to avoid GUI issues
-matplotlib.use("Agg")
-
 from flask import (
     Flask,
     flash,
@@ -30,12 +21,66 @@ from flask import (
 )
 from werkzeug.utils import secure_filename
 
-from src.data_forensics import DataForensics
 from src.main import detect_data_manipulation, setup_client
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler("app.log")],
+)
+
+
+# Log uncaught exceptions
+def handle_exception(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        # Handle keyboard interrupt differently
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+
+    logging.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+
+
+sys.excepthook = handle_exception
+
+# Try to import markdown, fallback to basic HTML conversion if not available
+try:
+    import markdown
+
+    HAS_MARKDOWN = True
+except ImportError:
+    logging.warning("Markdown package not found, using basic HTML conversion instead")
+    HAS_MARKDOWN = False
+
+# Use non-interactive backend to avoid GUI issues
+matplotlib.use("Agg")
+
 
 # Flask app setup
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
+
+
+# Register error handlers
+@app.errorhandler(403)
+def forbidden_error(error):
+    logging.error(f"403 Forbidden error: {error}")
+    flash("Access denied: You don't have permission to access this resource")
+    return redirect(url_for("index"))
+
+
+@app.errorhandler(404)
+def not_found_error(error):
+    logging.error(f"404 Not Found error: {error}")
+    flash("Resource not found: The requested page or file does not exist")
+    return redirect(url_for("index"))
+
+
+@app.errorhandler(500)
+def internal_error(error):
+    logging.error(f"500 Internal Server error: {error}")
+    flash("Server error: An unexpected error occurred. Please try again later.")
+    return redirect(url_for("index"))
 
 
 def basic_markdown_to_html(md_text):
@@ -105,6 +150,7 @@ def generate_data_preview(file_path, json_findings):
         elif ext == ".sav":
             try:
                 import pyreadstat
+
                 df, meta = pyreadstat.read_sav(file_path, encoding="latin1")
             except ImportError:
                 return "<div class='alert alert-warning'>The pyreadstat package is required to read SPSS (.sav) files. Please install it with 'pip install pyreadstat'.</div>"
@@ -112,11 +158,11 @@ def generate_data_preview(file_path, json_findings):
                 try:
                     # Try alternative encodings if the first attempt fails
                     df, meta = pyreadstat.read_sav(file_path, encoding="cp1252")
-                except Exception as e2:
+                except Exception:
                     try:
                         # Try with automatic encoding detection
                         df, meta = pyreadstat.read_sav(file_path, encoding=None)
-                    except Exception as e3:
+                    except Exception:
                         return f"<div class='alert alert-danger'>Error reading SPSS file: {str(e)}. Try converting the file to CSV format first.</div>"
         else:
             return "<div class='alert alert-warning'>Unsupported file format for preview.</div>"
@@ -230,7 +276,7 @@ def generate_data_preview(file_path, json_findings):
                     suspicious_cells[cell_key] = {
                         "type": "outlier",
                         "css_class": "cell-highlight-outlier",
-                        "explanation": f"Statistical outlier (z-score > 3)",
+                        "explanation": "Statistical outlier (z-score > 3)",
                     }
 
             elif finding["type"] == "excel_row_movement":
@@ -250,432 +296,622 @@ def generate_data_preview(file_path, json_findings):
                         }
                     )
 
+            elif finding["type"] == "claude_detected_anomaly":
+                # Process anomalies detected by Claude in data segments
+                detail = finding["details"]
+                if "row_indices" in detail and detail["row_indices"]:
+                    for row_idx in detail["row_indices"]:
+                        try:
+                            row_idx = int(row_idx)  # Ensure it's an integer
+                            explanation = detail.get(
+                                "description", "No description provided"
+                            )
+                            cols_involved = ", ".join(
+                                detail.get("columns_involved", ["Unknown"])
+                            )
+                            severity = detail.get("severity", "N/A")
+
+                            print(
+                                f"Found Claude-detected anomaly at row {row_idx}, severity: {severity}"
+                            )
+
+                            if row_idx not in suspicious_rows:
+                                suspicious_rows[row_idx] = []
+                            suspicious_rows[row_idx].append(
+                                {
+                                    "type": "claude_detected_anomaly",
+                                    "css_class": "claude-anomaly",
+                                    "explanation": f"{explanation} (Columns: {cols_involved}, Severity: {severity}/10)",
+                                }
+                            )
+
+                            # Mark the specific columns as suspicious
+                            for col in detail.get("columns_involved", []):
+                                if col in df.columns:
+                                    cell_key = f"{row_idx}_{col}"
+                                    suspicious_cells[cell_key] = {
+                                        "type": "claude_anomaly",
+                                        "css_class": "cell-highlight-claude",
+                                        "explanation": explanation,
+                                    }
+                        except Exception as e:
+                            import traceback
+
+                            error_details = traceback.format_exc()
+                            print(
+                                f"ERROR: Processing Claude anomaly row {row_idx} failed: {str(e)}"
+                            )
+                            print(f"ERROR DETAILS: {error_details}")
+                            continue
+
         # Log the suspicious rows and cells found
         print(
             f"Found {len(suspicious_rows)} suspicious rows and {len(suspicious_cells)} suspicious cells"
         )
-        
+
         if not suspicious_rows:
             return "<div class='alert alert-info'>No suspicious data points were found in this dataset.</div>"
-            
+
         # Group suspicious rows by type for organized display
         anomaly_types = {
-            "sorting_anomaly": {"title": "Sorting Anomalies", "rows": [], "description": "Rows with IDs out of sequence"},
-            "duplicate_id": {"title": "Duplicate IDs", "rows": [], "description": "Rows with duplicate ID values"},
-            "statistical_anomaly": {"title": "Statistical Outliers", "rows": [], "description": "Rows with values that are statistical outliers (z-score > 3)"},
-            "excel_movement": {"title": "Excel Row Movement", "rows": [], "description": "Rows with evidence of Excel manipulation from metadata"}
+            "sorting_anomaly": {
+                "title": "Sorting Anomalies",
+                "rows": [],
+                "description": "Rows with IDs out of sequence",
+            },
+            "duplicate_id": {
+                "title": "Duplicate IDs",
+                "rows": [],
+                "description": "Rows with duplicate ID values",
+            },
+            "statistical_anomaly": {
+                "title": "Statistical Outliers",
+                "rows": [],
+                "description": "Rows with values that are statistical outliers (z-score > 3)",
+            },
+            "excel_movement": {
+                "title": "Excel Row Movement",
+                "rows": [],
+                "description": "Rows with evidence of Excel manipulation from metadata",
+            },
+            "claude_detected_anomaly": {
+                "title": "Claude AI Detected Anomalies",
+                "rows": [],
+                "description": "Anomalies detected by Claude's direct analysis of data segments",
+            },
         }
-        
+
         # Categorize suspicious rows
         for idx, issues in suspicious_rows.items():
             for issue in issues:
                 issue_type = issue["type"]
                 if issue_type in anomaly_types:
                     if idx not in [r["idx"] for r in anomaly_types[issue_type]["rows"]]:
-                        anomaly_types[issue_type]["rows"].append({"idx": idx, "explanation": issue["explanation"]})
-        
+                        anomaly_types[issue_type]["rows"].append(
+                            {"idx": idx, "explanation": issue["explanation"]}
+                        )
+
         # Start building HTML output
         html_output = '<div class="suspicious-data-summary mb-4">\n'
         html_output += '  <div class="alert alert-warning">\n'
         html_output += f'    <i class="fas fa-exclamation-triangle me-2"></i>Found {len(suspicious_rows)} suspicious rows in the dataset.\n'
-        html_output += '  </div>\n'
-        
+        html_output += "  </div>\n"
+
         # Add a legend to explain the borders
         html_output += '  <div class="card mb-3">\n'
         html_output += '    <div class="card-header bg-light">\n'
         html_output += '      <h6 class="m-0">Legend</h6>\n'
-        html_output += '    </div>\n'
+        html_output += "    </div>\n"
         html_output += '    <div class="card-body p-3">\n'
         html_output += '      <div class="row">\n'
-        
+
         # Sorting anomalies
         html_output += '        <div class="col-md-3 mb-2">\n'
         html_output += '          <div class="d-flex align-items-center">\n'
         html_output += '            <div style="width: 24px; height: 24px; border: 2px solid #dc3545; margin-right: 8px;"></div>\n'
-        html_output += '            <span><strong>Red:</strong> Sorting Anomalies</span>\n'
-        html_output += '          </div>\n'
-        html_output += '        </div>\n'
-        
+        html_output += (
+            "            <span><strong>Red:</strong> Sorting Anomalies</span>\n"
+        )
+        html_output += "          </div>\n"
+        html_output += "        </div>\n"
+
         # Duplicate IDs
         html_output += '        <div class="col-md-3 mb-2">\n'
         html_output += '          <div class="d-flex align-items-center">\n'
         html_output += '            <div style="width: 24px; height: 24px; border: 2px solid #ffc107; margin-right: 8px;"></div>\n'
-        html_output += '            <span><strong>Yellow:</strong> Duplicate IDs</span>\n'
-        html_output += '          </div>\n'
-        html_output += '        </div>\n'
-        
+        html_output += (
+            "            <span><strong>Yellow:</strong> Duplicate IDs</span>\n"
+        )
+        html_output += "          </div>\n"
+        html_output += "        </div>\n"
+
         # Statistical outliers
         html_output += '        <div class="col-md-3 mb-2">\n'
         html_output += '          <div class="d-flex align-items-center">\n'
         html_output += '            <div style="width: 24px; height: 24px; border: 2px solid #0dcaf0; margin-right: 8px;"></div>\n'
-        html_output += '            <span><strong>Blue:</strong> Statistical Outliers</span>\n'
-        html_output += '          </div>\n'
-        html_output += '        </div>\n'
-        
+        html_output += (
+            "            <span><strong>Blue:</strong> Statistical Outliers</span>\n"
+        )
+        html_output += "          </div>\n"
+        html_output += "        </div>\n"
+
         # Excel movement
         html_output += '        <div class="col-md-3 mb-2">\n'
         html_output += '          <div class="d-flex align-items-center">\n'
         html_output += '            <div style="width: 24px; height: 24px; border: 2px solid #6c757d; margin-right: 8px;"></div>\n'
-        html_output += '            <span><strong>Gray:</strong> Excel Movement</span>\n'
-        html_output += '          </div>\n'
-        html_output += '        </div>\n'
-        
-        html_output += '      </div>\n'
+        html_output += (
+            "            <span><strong>Gray:</strong> Excel Movement</span>\n"
+        )
+        html_output += "          </div>\n"
+        html_output += "        </div>\n"
+
+        # Claude detected anomalies - add this in the second row
+        html_output += "      </div>\n"
+        html_output += '      <div class="row mt-2">\n'
+        html_output += '        <div class="col-md-3 mb-2">\n'
+        html_output += '          <div class="d-flex align-items-center">\n'
+        html_output += '            <div style="width: 24px; height: 24px; border: 2px solid #6f42c1; margin-right: 8px;"></div>\n'
+        html_output += (
+            "            <span><strong>Purple:</strong> Claude AI Anomalies</span>\n"
+        )
+        html_output += "          </div>\n"
+        html_output += "        </div>\n"
+
+        html_output += "      </div>\n"
         html_output += '      <div class="small text-muted mt-2">Hover over highlighted cells for detailed explanations of what makes them suspicious.</div>\n'
-        html_output += '    </div>\n'
-        html_output += '  </div>\n'
-        html_output += '</div>\n'
-        
+        html_output += "    </div>\n"
+        html_output += "  </div>\n"
+        html_output += "</div>\n"
+
         # Create tabs for different types of suspicious data
-        html_output += '<ul class="nav nav-tabs mb-3" id="suspiciousDataTabs" role="tablist">\n'
-        
+        html_output += (
+            '<ul class="nav nav-tabs mb-3" id="suspiciousDataTabs" role="tablist">\n'
+        )
+
         # Add tab headers
         active = True
         for anomaly_id, anomaly_info in anomaly_types.items():
             if anomaly_info["rows"]:
-                tab_active = 'active' if active else ''
-                html_output += f'  <li class="nav-item" role="presentation">\n'
+                tab_active = "active" if active else ""
+                html_output += '  <li class="nav-item" role="presentation">\n'
                 html_output += f'    <button class="nav-link {tab_active}" id="{anomaly_id}-tab" data-bs-toggle="tab" data-bs-target="#{anomaly_id}" type="button" role="tab">\n'
-                html_output += f'      {anomaly_info["title"]} ({len(anomaly_info["rows"])})\n'
-                html_output += f'    </button>\n'
-                html_output += f'  </li>\n'
+                html_output += (
+                    f"      {anomaly_info['title']} ({len(anomaly_info['rows'])})\n"
+                )
+                html_output += "    </button>\n"
+                html_output += "  </li>\n"
                 active = False
-        
-        html_output += '</ul>\n'
-        
+
+        html_output += "</ul>\n"
+
         # Add tab content
         html_output += '<div class="tab-content" id="suspiciousDataTabsContent">\n'
-        
+
         # Process each anomaly type
         active = True
         for anomaly_id, anomaly_info in anomaly_types.items():
             if not anomaly_info["rows"]:
                 continue
-                
-            tab_active = 'show active' if active else ''
+
+            tab_active = "show active" if active else ""
             html_output += f'  <div class="tab-pane fade {tab_active}" id="{anomaly_id}" role="tabpanel">\n'
-            html_output += f'    <div class="card mb-4">\n'
-            html_output += f'      <div class="card-header bg-light">\n'
+            html_output += '    <div class="card mb-4">\n'
+            html_output += '      <div class="card-header bg-light">\n'
             html_output += f'        <h5 class="mb-0">{anomaly_info["title"]}</h5>\n'
             html_output += f'        <p class="small text-muted mb-0">{anomaly_info["description"]}</p>\n'
-            html_output += f'      </div>\n'
-            html_output += f'      <div class="card-body">\n'
-            
+            html_output += "      </div>\n"
+            html_output += '      <div class="card-body">\n'
+
             # Create data table for this anomaly type
-            html_output += f'        <div class="table-responsive">\n'
+            html_output += '        <div class="table-responsive">\n'
             html_output += f'          <table id="{anomaly_id}-table" class="table table-hover table-bordered">\n'
-            html_output += f'            <thead class="table-light">\n'
-            html_output += f'              <tr>\n'
-            html_output += f'                <th>Row</th>\n'
-            
+            html_output += '            <thead class="table-light">\n'
+            html_output += "              <tr>\n"
+            html_output += "                <th>Row</th>\n"
+
             # Only include relevant columns for each anomaly type to avoid information overload
             relevant_columns = []
-            
+
             if anomaly_id == "sorting_anomaly":
                 # For sorting anomalies, show ID columns and sort columns
-                id_columns = [col for col in df.columns if any(pattern in col.lower() for pattern in ["id", "participant", "subject", "case"])]
-                
+                id_columns = [
+                    col
+                    for col in df.columns
+                    if any(
+                        pattern in col.lower()
+                        for pattern in ["id", "participant", "subject", "case"]
+                    )
+                ]
+
                 # Safely extract sort columns
                 sort_columns = []
                 for idx, issues in suspicious_rows.items():
                     for anomaly in issues:
-                        if anomaly["type"] == "sorting_anomaly" and "sort_column" in anomaly:
+                        if (
+                            anomaly["type"] == "sorting_anomaly"
+                            and "sort_column" in anomaly
+                        ):
                             sort_columns.append(anomaly["sort_column"])
-                
+
                 sort_columns = list(set(sort_columns))
-                
+
                 relevant_columns = id_columns + sort_columns
-                relevant_columns = list(dict.fromkeys(relevant_columns))  # Remove duplicates while preserving order
-                
+                relevant_columns = list(
+                    dict.fromkeys(relevant_columns)
+                )  # Remove duplicates while preserving order
+
             elif anomaly_id == "duplicate_id":
                 # For duplicate IDs, show ID columns and a few other key columns
-                id_columns = [col for col in df.columns if any(pattern in col.lower() for pattern in ["id", "participant", "subject", "case"])]
+                id_columns = [
+                    col
+                    for col in df.columns
+                    if any(
+                        pattern in col.lower()
+                        for pattern in ["id", "participant", "subject", "case"]
+                    )
+                ]
                 relevant_columns = id_columns[:1]  # Just the primary ID column
-                
+
                 # Add a few other discriminating columns
                 other_columns = [col for col in df.columns if col not in id_columns]
                 if other_columns:
-                    relevant_columns.extend(other_columns[:3])  # Add up to 3 more columns
-                
+                    relevant_columns.extend(
+                        other_columns[:3]
+                    )  # Add up to 3 more columns
+
             elif anomaly_id == "statistical_anomaly":
                 # For statistical anomalies, show columns with outliers and ID columns
                 outlier_columns = []
-                
+
                 # Safely extract outlier columns
                 if json_findings:
                     for finding in json_findings:
-                        if finding.get("type") == "statistical_anomaly" and "column" in finding:
+                        if (
+                            finding.get("type") == "statistical_anomaly"
+                            and "column" in finding
+                        ):
                             outlier_columns.append(finding["column"])
-                
+
                 outlier_columns = list(set(outlier_columns))
-                
-                id_columns = [col for col in df.columns if any(pattern in col.lower() for pattern in ["id", "participant", "subject", "case"])]
-                relevant_columns = id_columns[:1] + outlier_columns  # ID column + columns with outliers
-                
+
+                id_columns = [
+                    col
+                    for col in df.columns
+                    if any(
+                        pattern in col.lower()
+                        for pattern in ["id", "participant", "subject", "case"]
+                    )
+                ]
+                relevant_columns = (
+                    id_columns[:1] + outlier_columns
+                )  # ID column + columns with outliers
+
             elif anomaly_id == "excel_movement":
                 # For Excel movement, show ID columns and a few key columns
-                id_columns = [col for col in df.columns if any(pattern in col.lower() for pattern in ["id", "participant", "subject", "case"])]
+                id_columns = [
+                    col
+                    for col in df.columns
+                    if any(
+                        pattern in col.lower()
+                        for pattern in ["id", "participant", "subject", "case"]
+                    )
+                ]
                 relevant_columns = id_columns[:1]  # Just the primary ID column
-                
+
                 # Add a few other discriminating columns
-                group_columns = [col for col in df.columns if any(pattern in col.lower() for pattern in ["group", "condition", "treatment"])]
+                group_columns = [
+                    col
+                    for col in df.columns
+                    if any(
+                        pattern in col.lower()
+                        for pattern in ["group", "condition", "treatment"]
+                    )
+                ]
                 if group_columns:
                     relevant_columns.extend(group_columns[:2])
-                    
+
                 # Add outcome columns if we can detect them
-                outcome_columns = [col for col in df.columns if any(pattern in col.lower() for pattern in ["score", "result", "outcome", "dependent"])]
+                outcome_columns = [
+                    col
+                    for col in df.columns
+                    if any(
+                        pattern in col.lower()
+                        for pattern in ["score", "result", "outcome", "dependent"]
+                    )
+                ]
                 if outcome_columns:
                     relevant_columns.extend(outcome_columns[:2])
-            
+
             # Ensure we have some columns (fallback)
             if not relevant_columns and len(df.columns) > 0:
-                relevant_columns = df.columns[:min(5, len(df.columns))]
-            
+                relevant_columns = df.columns[: min(5, len(df.columns))]
+
             # Add column headers
             for col in relevant_columns:
-                html_output += f'                <th>{col}</th>\n'
-                
+                html_output += f"                <th>{col}</th>\n"
+
             # Add explanation header
-            html_output += f'                <th>Issue</th>\n'
-            html_output += f'              </tr>\n'
-            html_output += f'            </thead>\n'
-            html_output += f'            <tbody>\n'
-            
+            html_output += "                <th>Issue</th>\n"
+            html_output += "              </tr>\n"
+            html_output += "            </thead>\n"
+            html_output += "            <tbody>\n"
+
             # Sort rows by index for consistent display
             try:
-                sorted_rows = sorted(anomaly_info.get("rows", []), key=lambda x: x.get("idx", 0))
+                sorted_rows = sorted(
+                    anomaly_info.get("rows", []), key=lambda x: x.get("idx", 0)
+                )
             except Exception as sort_error:
                 print(f"Error sorting rows: {sort_error}")
                 sorted_rows = anomaly_info.get("rows", [])
-            
+
             # Add row data
             for row_info in sorted_rows:
                 try:
                     idx = row_info.get("idx", -1)
                     if idx >= 0 and idx < len(df):  # Ensure the index is valid
                         row_data = df.iloc[idx]
-                        
+
                         # Get CSS class for this row
                         css_class = ""
                         for issue in suspicious_rows.get(idx, []):
                             if issue.get("type") == anomaly_id and "css_class" in issue:
                                 css_class = issue["css_class"]
                                 break
-                        
+
                         html_output += f'              <tr class="{css_class}">\n'
-                        html_output += f'                <td><strong>{idx + 1}</strong></td>\n'  # Display 1-based row numbers
-                        
+                        html_output += f"                <td><strong>{idx + 1}</strong></td>\n"  # Display 1-based row numbers
+
                         # Add cell data for relevant columns
                         for col in relevant_columns:
                             if col in row_data:
                                 cell_value = row_data[col]
                                 cell_key = f"{idx}_{col}"
-                                
+
                                 # Make sure we have a value to display
                                 if pd.isna(cell_value):
                                     cell_display = ""
                                 else:
                                     cell_display = str(cell_value)
-                                
+
                                 # Check if this cell is specifically highlighted
                                 if cell_key in suspicious_cells:
                                     cell_info = suspicious_cells[cell_key]
                                     html_output += f'                <td class="{cell_info.get("css_class", "")}" data-bs-toggle="tooltip" data-bs-placement="top" title="{cell_info.get("explanation", "")}">{cell_display}</td>\n'
                                 else:
-                                    html_output += f'                <td>{cell_display}</td>\n'
+                                    html_output += (
+                                        f"                <td>{cell_display}</td>\n"
+                                    )
                             else:
-                                html_output += f'                <td></td>\n'  # Column not found
-                        
+                                html_output += (
+                                    "                <td></td>\n"  # Column not found
+                                )
+
                         # Add explanation
                         explanation = row_info.get("explanation", "Unknown issue")
-                        html_output += f'                <td>{explanation}</td>\n'
-                        html_output += f'              </tr>\n'
+                        html_output += f"                <td>{explanation}</td>\n"
+                        html_output += "              </tr>\n"
                 except Exception as row_error:
                     print(f"Error processing row {row_info}: {row_error}")
                     continue
-            
-            html_output += f'            </tbody>\n'
-            html_output += f'          </table>\n'
-            html_output += f'        </div>\n'
-            html_output += f'      </div>\n'
-            html_output += f'    </div>\n'
-            html_output += f'  </div>\n'
-            
+
+            html_output += "            </tbody>\n"
+            html_output += "          </table>\n"
+            html_output += "        </div>\n"
+            html_output += "      </div>\n"
+            html_output += "    </div>\n"
+            html_output += "  </div>\n"
+
             active = False
-        
-        html_output += '</div>\n'
-        
+
+        html_output += "</div>\n"
+
         # Add a link to view full dataset
         html_output += '<div class="text-center mt-4">\n'
-        html_output += '  <button id="show-full-data" class="btn btn-outline-primary">\n'
-        html_output += '    <i class="fas fa-table me-2"></i>Show Full Dataset Preview\n'
-        html_output += '  </button>\n'
-        html_output += '</div>\n'
-        
+        html_output += (
+            '  <button id="show-full-data" class="btn btn-outline-primary">\n'
+        )
+        html_output += (
+            '    <i class="fas fa-table me-2"></i>Show Full Dataset Preview\n'
+        )
+        html_output += "  </button>\n"
+        html_output += "</div>\n"
+
         # Create a hidden div with the full dataset table
-        html_output += '<div id="full-dataset-preview" style="display: none; margin-top: 30px;">\n'
-        html_output += '  <div class="d-flex justify-content-between align-items-center mb-3">\n'
+        html_output += (
+            '<div id="full-dataset-preview" style="display: none; margin-top: 30px;">\n'
+        )
+        html_output += (
+            '  <div class="d-flex justify-content-between align-items-center mb-3">\n'
+        )
         html_output += '    <h5 class="mb-0">Full Dataset Preview</h5>\n'
         html_output += '    <span class="badge bg-light text-dark border">Highlighted rows contain suspicious data</span>\n'
-        html_output += '  </div>\n'
-        
+        html_output += "  </div>\n"
+
         # Create full table
-        html_output += '  <table id="data-preview-table" class="table table-hover table-sm">\n'
-        html_output += '    <thead>\n'
-        html_output += '      <tr>\n'
-        html_output += '        <th>#</th>\n'
-        
+        html_output += (
+            '  <table id="data-preview-table" class="table table-hover table-sm">\n'
+        )
+        html_output += "    <thead>\n"
+        html_output += "      <tr>\n"
+        html_output += "        <th>#</th>\n"
+
         for col in df.columns:
-            html_output += f'        <th>{col}</th>\n'
-        
-        html_output += '      </tr>\n'
-        html_output += '    </thead>\n'
-        html_output += '    <tbody>\n'
-        
+            html_output += f"        <th>{col}</th>\n"
+
+        html_output += "      </tr>\n"
+        html_output += "    </thead>\n"
+        html_output += "    <tbody>\n"
+
         # Process all rows, but optimize the display to focus on suspicious rows
         suspicious_indices = list(suspicious_rows.keys())
-        
+
         # Debug the suspicious rows
         print(f"Full dataset preview - Suspicious rows: {suspicious_indices}")
-        
+
         # Determine which rows to display:
         # 1. Always include suspicious rows
         # 2. Include some rows before and after each suspicious row for context
         # 3. Add ellipses between non-adjacent sections
-        
-        context_rows = 2  # Number of rows to show before/after each suspicious row for context
+
+        context_rows = (
+            2  # Number of rows to show before/after each suspicious row for context
+        )
         rows_to_display = set()
-        
+
         # Add suspicious rows and their context rows
         for sus_idx in suspicious_indices:
             # Add the suspicious row itself
             rows_to_display.add(sus_idx)
-            
+
             # Add context rows before and after
-            for i in range(max(0, sus_idx - context_rows), min(len(df), sus_idx + context_rows + 1)):
+            for i in range(
+                max(0, sus_idx - context_rows), min(len(df), sus_idx + context_rows + 1)
+            ):
                 rows_to_display.add(i)
-        
+
         # Always include the first few rows for reference
         for i in range(min(5, len(df))):
             rows_to_display.add(i)
-        
+
         # Get sorted list of rows to display
         display_indices = sorted(list(rows_to_display))
-        
+
         # Process rows and add ellipses between non-adjacent sections
         last_idx = -1
         row_num = 1
-        
+
         for i, idx in enumerate(display_indices):
             # Check if we need to add an ellipsis row
             if last_idx != -1 and idx > last_idx + 1:
                 # Add ellipsis row
                 html_output += '      <tr class="table-secondary">\n'
                 html_output += f'        <td colspan="{len(df.columns) + 1}" class="text-center">\n'
-                html_output += f'          <em>⋮ ⋮ ⋮ {idx - last_idx - 1} rows without issues omitted ⋮ ⋮ ⋮</em>\n'
-                html_output += '        </td>\n'
-                html_output += '      </tr>\n'
-            
+                html_output += f"          <em>⋮ ⋮ ⋮ {idx - last_idx - 1} rows without issues omitted ⋮ ⋮ ⋮</em>\n"
+                html_output += "        </td>\n"
+                html_output += "      </tr>\n"
+
             # Get the row data
             row = df.iloc[idx]
-            
+
             # Check if this is a suspicious row
             row_classes = []
             title_text = []
-            
+
             # Use original DataFrame index to check for suspicious rows
             if idx in suspicious_rows:
-                print(f"Found suspicious row at index {idx} with issues: {suspicious_rows[idx]}")
+                print(
+                    f"Found suspicious row at index {idx} with issues: {suspicious_rows[idx]}"
+                )
                 row_classes.append("suspicious-row")
-                
+
                 # Add all issue classes for this row
                 for issue in suspicious_rows[idx]:
                     if "css_class" in issue:
                         row_classes.append(issue["css_class"])
-                        print(f"Adding class {issue['css_class']} to full dataset row {idx}")
-                    
+                        print(
+                            f"Adding class {issue['css_class']} to full dataset row {idx}"
+                        )
+
                     if "explanation" in issue:
                         title_text.append(issue["explanation"])
-            
+
             row_class = " ".join(row_classes)
             row_title = " | ".join(title_text)
-            
+
             if row_class:
                 html_output += f'      <tr class="{row_class}" title="{row_title}">\n'
             else:
-                html_output += '      <tr>\n'
-            
+                html_output += "      <tr>\n"
+
             # Add row number cell (showing the actual row number from the dataset)
-            html_output += f'        <td><strong>{idx + 1}</strong></td>\n'
-            
+            html_output += f"        <td><strong>{idx + 1}</strong></td>\n"
+
             # Add data cells
             for col in df.columns:
                 try:
                     cell_value = row[col]
                     cell_key = f"{idx}_{col}"
-                    
+
                     # Make sure we have a value to display
                     if pd.isna(cell_value):
                         cell_display = ""
                     else:
                         cell_display = str(cell_value)
-                    
+
                     if cell_key in suspicious_cells:
                         cell_info = suspicious_cells[cell_key]
                         html_output += f'        <td class="{cell_info.get("css_class", "")}" data-bs-toggle="tooltip" data-bs-placement="top" title="{cell_info.get("explanation", "")}">{cell_display}</td>\n'
                     else:
-                        html_output += f'        <td>{cell_display}</td>\n'
+                        html_output += f"        <td>{cell_display}</td>\n"
                 except Exception as cell_error:
                     print(f"Error processing cell {col} in row {idx}: {cell_error}")
-                    html_output += f'        <td></td>\n'
-            
-            html_output += '      </tr>\n'
-            
+                    html_output += f"        <td></td>\n"
+
+            html_output += "      </tr>\n"
+
             # Update last_idx
             last_idx = idx
             row_num += 1
-        
-        html_output += '    </tbody>\n'
-        html_output += '  </table>\n'
-        
+
+        html_output += "    </tbody>\n"
+        html_output += "  </table>\n"
+
         # Add note about the smart preview
         displayed_rows = len(display_indices)
         skipped_rows = len(df) - displayed_rows
         if skipped_rows > 0:
             html_output += f'  <div class="alert alert-info mt-3 mb-0">'
             html_output += f'    <i class="fas fa-info-circle me-2"></i>'
-            html_output += f'    Smart preview: Showing {displayed_rows} rows (including all suspicious rows and their context) '
-            html_output += f'    from a total of {len(df)} rows. {skipped_rows} rows without issues are condensed.'
-            html_output += f'  </div>\n'
-        
-        html_output += '</div>\n'
-        
+            html_output += f"    Smart preview: Showing {displayed_rows} rows (including all suspicious rows and their context) "
+            html_output += f"    from a total of {len(df)} rows. {skipped_rows} rows without issues are condensed."
+            html_output += f"  </div>\n"
+
+        html_output += "</div>\n"
+
         # Add JavaScript to toggle full dataset view
-        html_output += '<script>\n'
+        html_output += "<script>\n"
         html_output += '  document.addEventListener("DOMContentLoaded", function() {\n'
-        html_output += '    const toggleButton = document.getElementById("show-full-data");\n'
+        html_output += (
+            '    const toggleButton = document.getElementById("show-full-data");\n'
+        )
         html_output += '    const fullDatasetDiv = document.getElementById("full-dataset-preview");\n'
-        html_output += '    if (toggleButton && fullDatasetDiv) {\n'
+        html_output += "    if (toggleButton && fullDatasetDiv) {\n"
         html_output += '      toggleButton.addEventListener("click", function() {\n'
         html_output += '        if (fullDatasetDiv.style.display === "none") {\n'
         html_output += '          fullDatasetDiv.style.display = "block";\n'
-        html_output += '          toggleButton.innerHTML = \'<i class="fas fa-compress me-2"></i>Hide Full Dataset Preview\';\n'
-        html_output += '        } else {\n'
+        html_output += "          toggleButton.innerHTML = '<i class=\"fas fa-compress me-2\"></i>Hide Full Dataset Preview';\n"
+        html_output += "        } else {\n"
         html_output += '          fullDatasetDiv.style.display = "none";\n'
-        html_output += '          toggleButton.innerHTML = \'<i class="fas fa-table me-2"></i>Show Full Dataset Preview\';\n'
-        html_output += '        }\n'
-        html_output += '      });\n'
-        html_output += '    }\n'
-        html_output += '  });\n'
-        html_output += '</script>\n'
-        
+        html_output += "          toggleButton.innerHTML = '<i class=\"fas fa-table me-2\"></i>Show Full Dataset Preview';\n"
+        html_output += "        }\n"
+        html_output += "      });\n"
+        html_output += "    }\n"
+        html_output += "  });\n"
+        html_output += "</script>\n"
+
         return html_output
 
     except Exception as e:
+        import logging
         import traceback
+
         error_details = traceback.format_exc()
-        print(f"Error in generate_data_preview: {str(e)}\n{error_details}")
-        return f"<div class='alert alert-danger'>Error generating data preview: {str(e)}</div>"
+
+        # Create a more visible error message in the server logs
+        error_msg = f"ERROR: Data preview generation failed: {str(e)}"
+        error_box = "*" * len(error_msg)
+        print(f"\n{error_box}\n{error_msg}\n{error_box}\n")
+        print(f"ERROR DETAILS:\n{error_details}")
+
+        # Log to application log if logger is configured
+        try:
+            logging.error(f"Data preview generation failed: {str(e)}")
+            logging.error(f"Traceback: {error_details}")
+        except:
+            pass  # Silently handle if logging isn't configured
+
+        return f"<div class='alert alert-danger'>Error generating data preview: {str(e)}<br><small>Check server logs for details.</small></div>"
 
 
 @app.route("/previous_results")
@@ -766,19 +1002,21 @@ def upload_file():
     paper_path = None
     has_paper = False
     paper_is_text = False
-    
+
     # Check for text-based article content
-    article_text = request.form.get('article-text', '')
-    if article_text and len(article_text.strip()) > 100:  # Ensure we have substantial content
+    article_text = request.form.get("article-text", "")
+    if (
+        article_text and len(article_text.strip()) > 100
+    ):  # Ensure we have substantial content
         paper_is_text = True
         print(f"Article text provided ({len(article_text)} characters)")
-    
+
     # We always have include-paper field set to 'on' now
-    if 'paper-file' in request.files:
-        paper_file = request.files['paper-file']
-        
+    if "paper-file" in request.files:
+        paper_file = request.files["paper-file"]
+
         # Check if a PDF was actually uploaded
-        if paper_file.filename != "" and paper_file.filename.lower().endswith('.pdf'):
+        if paper_file.filename != "" and paper_file.filename.lower().endswith(".pdf"):
             has_paper = True
             print(f"Research paper uploaded: {paper_file.filename}")
         else:
@@ -797,7 +1035,7 @@ def upload_file():
         filename = secure_filename(file.filename)
         file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         file.save(file_path)
-        
+
         # Handle paper content (either file or text)
         if has_paper and paper_file:
             paper_filename = secure_filename(paper_file.filename)
@@ -807,7 +1045,7 @@ def upload_file():
         elif paper_is_text:
             # Save article text to a text file
             paper_path = os.path.join(analysis_folder, "article_text.txt")
-            with open(paper_path, 'w') as text_file:
+            with open(paper_path, "w") as text_file:
                 text_file.write(article_text)
             has_paper = True
             print(f"Saved article text to: {paper_path}")
@@ -816,17 +1054,26 @@ def upload_file():
         client = setup_client()
 
         # Check for encoding issues with .sav files
-        if filename.lower().endswith('.sav'):
+        if filename.lower().endswith(".sav"):
             try:
                 # Test read the file to verify it can be processed
                 import pyreadstat
+
                 test_df = None
-                encodings = ["latin1", "cp1252", "utf-8", "iso-8859-1", None]  # Try more encodings, including None for auto-detection
-                
+                encodings = [
+                    "latin1",
+                    "cp1252",
+                    "utf-8",
+                    "iso-8859-1",
+                    None,
+                ]  # Try more encodings, including None for auto-detection
+
                 for encoding in encodings:
                     try:
                         print(f"Trying to read SPSS file with encoding: {encoding}")
-                        test_df, meta = pyreadstat.read_sav(file_path, encoding=encoding)
+                        test_df, meta = pyreadstat.read_sav(
+                            file_path, encoding=encoding
+                        )
                         print(f"Successfully read SPSS file with encoding: {encoding}")
                         # If successful, break out of the loop
                         break
@@ -834,31 +1081,45 @@ def upload_file():
                         last_error = str(e)
                         print(f"Failed with encoding {encoding}: {last_error}")
                         continue
-                
+
                 if test_df is None:
-                    raise Exception(f"Could not read SPSS file with any encoding: {last_error}")
-                
+                    raise Exception(
+                        f"Could not read SPSS file with any encoding: {last_error}"
+                    )
+
                 # Clear memory
                 del test_df
             except ImportError:
-                flash("The pyreadstat package is required to read SPSS files. Please install it with 'pip install pyreadstat'.")
+                flash(
+                    "The pyreadstat package is required to read SPSS files. Please install it with 'pip install pyreadstat'."
+                )
                 return redirect(url_for("index"))
             except Exception as e:
-                flash(f"Error reading SPSS file: {str(e)}. Try converting to CSV format first.")
+                flash(
+                    f"Error reading SPSS file: {str(e)}. Try converting to CSV format first."
+                )
                 return redirect(url_for("index"))
-        
+
         # Run analysis - pass the paper path if a paper was uploaded
         if has_paper and paper_path:
-            report = detect_data_manipulation(client, file_path, analysis_folder, paper_path=paper_path)
+            report = detect_data_manipulation(
+                client,
+                file_path,
+                analysis_folder,
+                paper_path=paper_path,
+                use_claude_segmentation=True,
+            )
         else:
-            report = detect_data_manipulation(client, file_path, analysis_folder)
+            report = detect_data_manipulation(
+                client, file_path, analysis_folder, use_claude_segmentation=True
+            )
 
         # Store original dataset for browsing
         try:
             ext = os.path.splitext(file_path)[1].lower()
             original_columns = []
             original_data = []
-            
+
             if ext == ".xlsx":
                 df = pd.read_excel(file_path)
                 original_columns = df.columns.tolist()
@@ -873,10 +1134,11 @@ def upload_file():
                 original_data = df.values.tolist()
             elif ext == ".sav":
                 import pyreadstat
+
                 df, meta = pyreadstat.read_sav(file_path, encoding=None)
                 original_columns = df.columns.tolist()
                 original_data = df.values.tolist()
-                
+
             # Convert non-serializable values (like numpy types) to Python native types
             for i, row in enumerate(original_data):
                 for j, val in enumerate(row):
@@ -886,12 +1148,12 @@ def upload_file():
                         original_data[i][j] = val.tolist()
                     elif pd.isna(val):
                         original_data[i][j] = None
-                        
+
         except Exception as e:
             print(f"Error preparing original data for browser: {e}")
             original_columns = []
             original_data = []
-            
+
         # Store analysis information
         report_filename = f"report_{filename}.md"
         analysis_info = {
@@ -904,7 +1166,7 @@ def upload_file():
             "paper_path": paper_path if paper_path else None,
             "paper_is_text": paper_is_text,
             "original_columns": original_columns,
-            "original_data": original_data
+            "original_data": original_data,
         }
 
         # Save analysis metadata
@@ -914,16 +1176,60 @@ def upload_file():
         return redirect(url_for("view_results", analysis_id=analysis_id))
 
     except Exception as e:
-        flash(f"Error during analysis: {str(e)}")
+        import logging
+        import traceback
+
+        error_details = traceback.format_exc()
+
+        # Create a highly visible error message in the server logs
+        error_msg = f"CRITICAL: Analysis failed for file {filename}: {str(e)}"
+        error_box = "#" * len(error_msg)
+        print(f"\n{error_box}\n{error_msg}\n{error_box}\n")
+        print(f"ERROR DETAILS:\n{error_details}")
+
+        # Log to application log if logger is configured
+        try:
+            logging.error(f"Analysis failed for file {filename}: {str(e)}")
+            logging.error(f"Traceback: {error_details}")
+        except:
+            pass  # Silently handle if logging isn't configured
+
+        # Show a more detailed error message to the user
+        error_summary = str(e)
+        if len(error_summary) > 100:  # Truncate if too long
+            error_summary = error_summary[:100] + "..."
+
+        flash(
+            f"Analysis failed: {error_summary} (See server logs for details)", "error"
+        )
         return redirect(url_for("index"))
 
 
 @app.route("/results/<analysis_id>")
 def view_results(analysis_id):
-    # Validate analysis ID
+    # Validate analysis ID format to prevent security issues
+    if not analysis_id or not re.match(r"^[a-zA-Z0-9_\-]+$", analysis_id):
+        logging.warning(f"Invalid analysis ID format: {analysis_id}")
+        flash("Invalid analysis ID format")
+        return redirect(url_for("index"))
+
+    # Validate analysis ID exists
     analysis_folder = os.path.join(app.config["RESULTS_FOLDER"], analysis_id)
     if not os.path.exists(analysis_folder):
+        logging.warning(f"Analysis not found: {analysis_id}")
         flash("Analysis not found")
+        return redirect(url_for("index"))
+
+    # Verify analysis folder is a directory and not a file
+    if not os.path.isdir(analysis_folder):
+        logging.error(f"Analysis ID points to a file, not a directory: {analysis_id}")
+        flash("Invalid analysis ID")
+        return redirect(url_for("index"))
+
+    # Verify analysis folder is a directory and not a file
+    if not os.path.isdir(analysis_folder):
+        logging.error(f"Analysis ID points to a file, not a directory: {analysis_id}")
+        flash("Invalid analysis ID")
         return redirect(url_for("index"))
 
     # Load analysis info
@@ -1001,32 +1307,50 @@ def view_results(analysis_id):
                 finding_summary = ", ".join(
                     [t.replace("_", " ").title() for t in set(finding_types)]
                 )
-                
+
                 # Create a more detailed explanation based on finding types
                 finding_explanations = []
-                if 'sorting_anomaly' in finding_types:
-                    sorting_anomalies = [f for f in json_findings if f["type"] == "sorting_anomaly"]
+                if "sorting_anomaly" in finding_types:
+                    sorting_anomalies = [
+                        f for f in json_findings if f["type"] == "sorting_anomaly"
+                    ]
                     if sorting_anomalies and "details" in sorting_anomalies[0]:
                         anomaly_count = len(sorting_anomalies[0]["details"])
-                        finding_explanations.append(f"<li><strong>Sorting Anomalies:</strong> Found {anomaly_count} rows out of sequence, suggesting manual row manipulation.</li>")
-                
-                if 'excel_row_movement' in finding_types:
-                    excel_findings = [f for f in json_findings if f["type"] == "excel_row_movement"]
+                        finding_explanations.append(
+                            f"<li><strong>Sorting Anomalies:</strong> Found {anomaly_count} rows out of sequence, suggesting manual row manipulation.</li>"
+                        )
+
+                if "excel_row_movement" in finding_types:
+                    excel_findings = [
+                        f for f in json_findings if f["type"] == "excel_row_movement"
+                    ]
                     if excel_findings and "details" in excel_findings[0]:
                         movement_count = len(excel_findings[0]["details"])
-                        finding_explanations.append(f"<li><strong>Excel Manipulation:</strong> Direct evidence of {movement_count} rows being moved in Excel.</li>")
-                
-                if 'duplicate_ids' in finding_types:
-                    duplicate_findings = [f for f in json_findings if f["type"] == "duplicate_ids"]
+                        finding_explanations.append(
+                            f"<li><strong>Excel Manipulation:</strong> Direct evidence of {movement_count} rows being moved in Excel.</li>"
+                        )
+
+                if "duplicate_ids" in finding_types:
+                    duplicate_findings = [
+                        f for f in json_findings if f["type"] == "duplicate_ids"
+                    ]
                     if duplicate_findings and "details" in duplicate_findings[0]:
                         duplicate_count = len(duplicate_findings[0]["details"])
-                        finding_explanations.append(f"<li><strong>Duplicate IDs:</strong> Found {duplicate_count} duplicate IDs that may indicate copying or duplication.</li>")
-                
-                if 'effect_size_analysis' in finding_types:
-                    finding_explanations.append("<li><strong>Effect Size Analysis:</strong> Statistical analysis of treatment effects shows unusual patterns.</li>")
-                
-                finding_html = "<ul>" + "".join(finding_explanations) + "</ul>" if finding_explanations else ""
-                
+                        finding_explanations.append(
+                            f"<li><strong>Duplicate IDs:</strong> Found {duplicate_count} duplicate IDs that may indicate copying or duplication.</li>"
+                        )
+
+                if "effect_size_analysis" in finding_types:
+                    finding_explanations.append(
+                        "<li><strong>Effect Size Analysis:</strong> Statistical analysis of treatment effects shows unusual patterns.</li>"
+                    )
+
+                finding_html = (
+                    "<ul>" + "".join(finding_explanations) + "</ul>"
+                    if finding_explanations
+                    else ""
+                )
+
                 finding_replacement = f"""<div class="alert alert-warning">
 <strong>Technical Findings:</strong> Detected {finding_count} potential issues: {finding_summary}.
 {finding_html}
@@ -1050,9 +1374,20 @@ def view_results(analysis_id):
         else:
             report_html = basic_markdown_to_html(clean_report)
 
-        # Fix image paths in HTML
-        base_url = url_for("get_file", analysis_id=analysis_id, filename="")
-        report_html = report_html.replace('src="', f'src="{base_url}')
+        # Fix image paths in HTML - handle all possible formats
+        base_url = url_for("get_file", analysis_id=analysis_id, filename="").rstrip("/")
+
+        # Fix normal image tag patterns
+        report_html = report_html.replace('src="', f'src="{base_url}/')
+
+        # Fix any other URL patterns
+        report_html = report_html.replace('href="', f'href="{base_url}/')
+
+        # Special case for image URLs that already include a full path
+        # Don't double up the base_url if the URL already has it
+        report_html = report_html.replace(
+            f'src="{base_url}/{base_url}/', f'src="{base_url}/'
+        )
 
         # Get image files
         image_files = [
@@ -1089,18 +1424,135 @@ def view_results(analysis_id):
         )
 
     except Exception as e:
-        flash(f"Error loading results: {str(e)}")
+        import logging
+        import traceback
+
+        error_details = traceback.format_exc()
+
+        # Create a highly visible error message in the server logs
+        error_msg = (
+            f"CRITICAL: Failed to load results for analysis {analysis_id}: {str(e)}"
+        )
+        error_box = "#" * len(error_msg)
+        print(f"\n{error_box}\n{error_msg}\n{error_box}\n")
+        print(f"ERROR DETAILS:\n{error_details}")
+
+        # Log to application log if logger is configured
+        try:
+            logging.error(f"Results page failed for analysis {analysis_id}: {str(e)}")
+            logging.error(f"Traceback: {error_details}")
+        except:
+            pass  # Silently handle if logging isn't configured
+
+        # Show a more detailed error message to the user
+        error_summary = str(e)
+        if len(error_summary) > 100:  # Truncate if too long
+            error_summary = error_summary[:100] + "..."
+
+        flash(
+            f"Error loading results: {error_summary} (See server logs for details)",
+            "error",
+        )
         return redirect(url_for("index"))
 
 
 @app.route("/file/<analysis_id>/<path:filename>")
 def get_file(analysis_id, filename):
     """Serve files from the results directory"""
-    return send_from_directory(
-        os.path.join(app.config["RESULTS_FOLDER"], analysis_id), filename
-    )
+    try:
+        # Validate that the analysis ID exists
+        analysis_folder = os.path.join(app.config["RESULTS_FOLDER"], analysis_id)
+        if not os.path.exists(analysis_folder):
+            logging.warning(
+                f"Attempt to access file in non-existent analysis folder: {analysis_id}"
+            )
+            flash("Analysis not found")
+            return redirect(url_for("index"))
+
+        # Validate that the file exists
+        file_path = os.path.join(analysis_folder, filename)
+        if not os.path.exists(file_path):
+            logging.warning(f"Attempt to access non-existent file: {file_path}")
+            flash(f"File not found: {filename}")
+            return redirect(url_for("view_results", analysis_id=analysis_id))
+
+        # Validate that the file is within the analysis folder (prevent directory traversal)
+        if not os.path.realpath(file_path).startswith(
+            os.path.realpath(analysis_folder)
+        ):
+            logging.error(
+                f"Security issue: Attempt to access file outside analysis folder: {file_path}"
+            )
+            flash("Access denied for security reasons")
+            return redirect(url_for("index"))
+
+        # Make sure the file is readable
+        if not os.access(file_path, os.R_OK):
+            logging.error(
+                f"Permission error: File exists but is not readable: {file_path}"
+            )
+            flash("File access error: The file exists but cannot be read")
+            return redirect(url_for("view_results", analysis_id=analysis_id))
+
+        # If it's an image, ensure it's a valid image type to prevent security issues
+        if filename.lower().endswith((".png", ".jpg", ".jpeg", ".gif")):
+            # Check for valid image file
+            try:
+                from PIL import Image
+
+                Image.open(file_path).verify()  # Just verify it's a valid image
+            except:
+                logging.warning(f"Invalid image file: {file_path}")
+                # Continue anyway, as it might be a corrupted image we still want to serve
+
+        # Use Flask's secure way to serve files
+        try:
+            # Use the correct form of send_from_directory based on the Flask version
+            try:
+                # Try the newer Flask 2.0+ form first
+                return send_from_directory(
+                    analysis_folder, filename, as_attachment=False
+                )
+            except TypeError:
+                # Fall back to older Flask versions which didn't have as_attachment
+                return send_from_directory(analysis_folder, filename)
+        except:
+            # Fall back to basic file serving if Flask's method fails
+            from flask import Response
+
+            with open(file_path, "rb") as f:
+                content = f.read()
+
+            # Try to determine MIME type
+            import mimetypes
+
+            mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+
+            return Response(content, mimetype=mime_type)
+    except Exception as e:
+        import traceback
+
+        error_details = traceback.format_exc()
+
+        # Log the error
+        logging.error(
+            f"Error accessing file {filename} in analysis {analysis_id}: {str(e)}"
+        )
+        logging.error(f"Traceback: {error_details}")
+
+        flash(f"Error accessing file: {str(e)}")
+        return redirect(url_for("index"))
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Log application startup
+    logging.info("=" * 50)
+    logging.info("Data Forensics Tool starting up")
+    logging.info(f"Python version: {sys.version}")
+    logging.info(f"Working directory: {os.getcwd()}")
+    logging.info(f"Upload folder: {app.config['UPLOAD_FOLDER']}")
+    logging.info(f"Results folder: {app.config['RESULTS_FOLDER']}")
+    logging.info("=" * 50)
+
+    # Fix the duplicate app.run call issue
     app.run(debug=True)
