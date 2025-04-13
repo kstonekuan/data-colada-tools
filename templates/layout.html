@@ -152,6 +152,148 @@
         .step.active .step-badge {
             background-color: #0d6efd !important;
         }
+        
+        /* Data Preview Table Styles */
+        #data-preview-table {
+            width: 100%;
+            font-size: 0.9rem;
+            border-collapse: collapse;
+        }
+        #data-preview-table th {
+            position: sticky;
+            top: 0;
+            background-color: #f8f9fa;
+            z-index: 10;
+            font-weight: 600;
+            padding: 8px;
+            border: 1px solid #dee2e6;
+        }
+        #data-preview-table td {
+            padding: 8px;
+            border: 1px solid #dee2e6;
+        }
+        .suspicious-row {
+            animation: highlight-pulse 2s ease-in-out infinite;
+        }
+        
+        /* Highlighting styles for specific issues */
+        .sorting-anomaly {
+            background-color: rgba(220, 53, 69, 0.1); /* Light red background */
+        }
+        .duplicate-id {
+            background-color: rgba(255, 193, 7, 0.1); /* Light yellow background */
+        }
+        .statistical-anomaly {
+            background-color: rgba(13, 202, 240, 0.1); /* Light blue background */
+        }
+        .excel-movement {
+            background-color: rgba(108, 117, 125, 0.1); /* Light gray background */
+        }
+        
+        /* Cell specific highlights - using borders */
+        .cell-highlight-sorting {
+            border: 2px solid #dc3545 !important; /* Red border */
+            font-weight: bold;
+            position: relative;
+        }
+        .cell-highlight-duplicate {
+            border: 2px solid #ffc107 !important; /* Yellow border */
+            font-weight: bold;
+            position: relative;
+        }
+        .cell-highlight-outlier {
+            border: 2px solid #0dcaf0 !important; /* Blue border */
+            font-weight: bold;
+            position: relative;
+        }
+        .cell-highlight-excel {
+            border: 2px solid #6c757d !important; /* Gray border */
+            font-weight: bold;
+            position: relative;
+        }
+        
+        /* Row highlights with borders */
+        tr.sorting-anomaly td {
+            border-top: 2px solid #dc3545 !important;
+            border-bottom: 2px solid #dc3545 !important;
+        }
+        tr.sorting-anomaly td:first-child {
+            border-left: 2px solid #dc3545 !important;
+        }
+        tr.sorting-anomaly td:last-child {
+            border-right: 2px solid #dc3545 !important;
+        }
+        
+        tr.duplicate-id td {
+            border-top: 2px solid #ffc107 !important;
+            border-bottom: 2px solid #ffc107 !important;
+        }
+        tr.duplicate-id td:first-child {
+            border-left: 2px solid #ffc107 !important;
+        }
+        tr.duplicate-id td:last-child {
+            border-right: 2px solid #ffc107 !important;
+        }
+        
+        tr.statistical-anomaly td {
+            border-top: 2px solid #0dcaf0 !important;
+            border-bottom: 2px solid #0dcaf0 !important;
+        }
+        tr.statistical-anomaly td:first-child {
+            border-left: 2px solid #0dcaf0 !important;
+        }
+        tr.statistical-anomaly td:last-child {
+            border-right: 2px solid #0dcaf0 !important;
+        }
+        
+        tr.excel-movement td {
+            border-top: 2px solid #6c757d !important;
+            border-bottom: 2px solid #6c757d !important;
+        }
+        tr.excel-movement td:first-child {
+            border-left: 2px solid #6c757d !important;
+        }
+        tr.excel-movement td:last-child {
+            border-right: 2px solid #6c757d !important;
+        }
+        
+        /* Add indicator symbols to highlighted cells */
+        .cell-highlight-sorting::before,
+        .cell-highlight-duplicate::before,
+        .cell-highlight-outlier::before,
+        .cell-highlight-excel::before {
+            position: absolute;
+            top: 0;
+            right: 0;
+            font-size: 10px;
+            padding: 1px;
+        }
+        
+        .cell-highlight-sorting::before {
+            content: "⚠";
+            color: #dc3545;
+        }
+        
+        .cell-highlight-duplicate::before {
+            content: "⊕";
+            color: #ffc107;
+        }
+        
+        .cell-highlight-outlier::before {
+            content: "⊙";
+            color: #0dcaf0;
+        }
+        
+        .cell-highlight-excel::before {
+            content: "⇄";
+            color: #6c757d;
+        }
+        
+        /* Make suspicious rows stand out more */
+        .suspicious-row {
+            position: relative;
+            z-index: 1;
+        }
     </style>
 </head>
 <body>

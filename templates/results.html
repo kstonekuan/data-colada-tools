@@ -41,8 +41,13 @@
                         </button>
                     </li>
                     <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="data-preview-tab" data-bs-toggle="tab" data-bs-target="#data-preview" type="button" role="tab">
+                            <i class="fas fa-table me-2"></i>Data Preview
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
                         <button class="nav-link" id="columns-tab" data-bs-toggle="tab" data-bs-target="#columns" type="button" role="tab">
-                            <i class="fas fa-table me-2"></i>Column Analysis
+                            <i class="fas fa-clipboard-list me-2"></i>Column Analysis
                         </button>
                     </li>
                 </ul>
@@ -214,6 +219,59 @@
                         </div>
                     </div>
                     
+                    <div class="tab-pane fade" id="data-preview" role="tabpanel">
+                        <div class="data-preview-container">
+                            <h4 class="mb-4">Data Preview with Highlighted Suspicious Entries</h4>
+                            <div class="row mb-3">
+                                <div class="col-md-12">
+                                    <div class="card">
+                                        <div class="card-header bg-info text-white">
+                                            <div class="d-flex justify-content-between align-items-center">
+                                                <span><i class="fas fa-info-circle me-2"></i>About This View</span>
+                                            </div>
+                                        </div>
+                                        <div class="card-body">
+                                            <p>This table shows a preview of the dataset with suspicious data highlighted:</p>
+                                            <ul>
+                                                <li><span class="badge bg-danger">Red</span> - Sorting anomalies where IDs appear out of sequence</li>
+                                                <li><span class="badge bg-warning text-dark">Yellow</span> - Duplicate IDs that appear more than once</li>
+                                                <li><span class="badge bg-info text-dark">Blue</span> - Statistical outliers (z-score > 3)</li>
+                                                <li><span class="badge bg-secondary">Gray</span> - Rows with evidence of Excel movement</li>
+                                            </ul>
+                                            <p class="small">Hover over highlighted cells to see details about the issue.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="table-responsive">
+                                <div class="mb-3">
+                                    <div class="input-group">
+                                        <span class="input-group-text"><i class="fas fa-filter"></i></span>
+                                        <select class="form-select" id="issue-filter">
+                                            <option value="all">Show All Rows</option>
+                                            <option value="suspicious-only">Show Only Suspicious Rows</option>
+                                            <option value="sorting">Show Only Sorting Anomalies</option>
+                                            <option value="duplicates">Show Only Duplicate IDs</option>
+                                            <option value="outliers">Show Only Statistical Outliers</option>
+                                            <option value="excel">Show Only Excel Movement Evidence</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                
+                                <div id="data-table-container">
+                                    {% if data_preview %}
+                                        {{ data_preview|safe }}
+                                    {% else %}
+                                        <div class="alert alert-info">
+                                            <i class="fas fa-info-circle me-2"></i>Data preview is not available. Please reload this analysis.
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
                     <div class="tab-pane fade" id="columns" role="tabpanel">
                         <div class="columns-container">
                             <h4 class="mb-4">Data Column Analysis</h4>
@@ -362,6 +420,71 @@
                 }
             });
         });
+        
+        // Data Preview filtering
+        console.log('Initializing data preview filtering');
+        
+        // Make sure we wait until the document is fully loaded
+        setTimeout(() => {
+            const issueFilter = document.getElementById('issue-filter');
+            if (issueFilter) {
+                console.log('Found issue filter element');
+            
+            issueFilter.addEventListener('change', function() {
+                const filterValue = this.value;
+                console.log('Filter changed to:', filterValue);
+                
+                const rows = document.querySelectorAll('#data-preview-table tbody tr');
+                console.log('Found', rows.length, 'rows to filter');
+                
+                rows.forEach(row => {
+                    // First hide all rows
+                    row.style.display = 'none';
+                    
+                    // Show rows based on filter
+                    if (filterValue === 'all') {
+                        row.style.display = '';
+                        console.log('Showing all rows');
+                    } else if (filterValue === 'suspicious-only' && row.className.includes('suspicious-row')) {
+                        row.style.display = '';
+                        console.log('Showing suspicious row:', row.className);
+                    } else if (filterValue === 'sorting' && row.className.includes('sorting-anomaly')) {
+                        row.style.display = '';
+                        console.log('Showing sorting anomaly row:', row.className);
+                    } else if (filterValue === 'duplicates' && row.className.includes('duplicate-id')) {
+                        row.style.display = '';
+                        console.log('Showing duplicate ID row:', row.className);
+                    } else if (filterValue === 'outliers' && row.className.includes('statistical-anomaly')) {
+                        row.style.display = '';
+                        console.log('Showing statistical anomaly row:', row.className);
+                    } else if (filterValue === 'excel' && row.className.includes('excel-movement')) {
+                        row.style.display = '';
+                        console.log('Showing Excel movement row:', row.className);
+                    }
+                });
+                
+                // Log classes of all rows for debugging
+                if (rows.length > 0) {
+                    console.log('First row classes:', rows[0].className);
+                }
+            });
+            
+            // Initialize tooltips after page load
+            setTimeout(() => {
+                console.log('Initializing tooltips');
+                if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
+                    const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]');
+                    const tooltipList = [...tooltipTriggerList].map(tooltipTriggerEl => new bootstrap.Tooltip(tooltipTriggerEl));
+                    console.log('Initialized', tooltipList.length, 'tooltips');
+                } else {
+                    console.log('Bootstrap tooltip not available');
+                }
+            }, 500);
+            } else {
+                console.log('Issue filter element not found');
+            }
+        }, 300);
+        }
     });
 </script>
 {% endblock %}
