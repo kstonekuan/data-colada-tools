@@ -151,19 +151,64 @@ def view_results(analysis_id):
             manipulation_rating = int(rating_match.group(1))
             # Remove the rating line from the report content for cleaner display
             report_content = re.sub(r'MANIPULATION_RATING:\s*\d+\s*\n', '', report_content)
+            
+        # Extract JSON content for better formatting
+        json_findings = []
+        json_columns = []
+        
+        # Find all JSON code blocks
+        json_blocks = re.findall(r'```json\n(.*?)\n```', report_content, re.DOTALL)
+        
+        if len(json_blocks) >= 2:
+            # First block is typically column categories
+            try:
+                json_columns = json.loads(json_blocks[0])
+            except:
+                json_columns = {}
+                
+            # Second block is typically findings
+            try:
+                json_findings = json.loads(json_blocks[1])
+            except:
+                json_findings = []
+        
+        # Clean up the report content to remove raw JSON blocks
+        clean_report = report_content
+        
+        # Replace JSON blocks with more readable messages
+        if len(json_blocks) >= 2:
+            # Replace first JSON block (column categories)
+            column_count = sum(len(cols) for cols in json_columns.values() if isinstance(cols, list))
+            column_replacement = f"""<div class="alert alert-info">
+<strong>Column Analysis:</strong> Identified {column_count} columns categorized by their function.
+<em>See the "Column Analysis" tab for details.</em>
+</div>"""
+            clean_report = re.sub(r'```json\n' + re.escape(json_blocks[0]) + r'\n```', column_replacement, clean_report)
+            
+            # Replace second JSON block (findings)
+            finding_types = [f["type"] for f in json_findings] if json_findings else []
+            finding_count = len(json_findings)
+            
+            if finding_count > 0:
+                finding_summary = ", ".join([t.replace("_", " ").title() for t in set(finding_types)])
+                finding_replacement = f"""<div class="alert alert-warning">
+<strong>Technical Findings:</strong> Detected {finding_count} potential issues: {finding_summary}.
+<em>See the "Technical Findings" tab for detailed analysis.</em>
+</div>"""
+                clean_report = re.sub(r'```json\n' + re.escape(json_blocks[1]) + r'\n```', finding_replacement, clean_report)
         
         # Convert markdown to HTML
         if HAS_MARKDOWN:
             try:
                 report_html = markdown.markdown(
-                    report_content,
+                    clean_report,
                     extensions=['fenced_code', 'tables']
                 )
             except Exception as e:
                 print(f"Error rendering markdown: {e}")
-                report_html = basic_markdown_to_html(report_content)
+                report_html = basic_markdown_to_html(clean_report)
         else:
-            report_html = basic_markdown_to_html(report_content)
+            report_html = basic_markdown_to_html(clean_report)
         
         # Fix image paths in HTML
         base_url = url_for("get_file", analysis_id=analysis_id, filename='')
@@ -179,7 +224,9 @@ def view_results(analysis_id):
             report_html=report_html,
             images=image_files,
             analysis_id=analysis_id,
-            manipulation_rating=manipulation_rating
+            manipulation_rating=manipulation_rating,
+            json_findings=json_findings,
+            json_columns=json_columns
         )
     
     except Exception as e:

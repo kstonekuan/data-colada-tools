@@ -35,6 +35,16 @@
                             <i class="fas fa-chart-bar me-2"></i>Visualizations
                         </button>
                     </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="findings-tab" data-bs-toggle="tab" data-bs-target="#findings" type="button" role="tab">
+                            <i class="fas fa-search me-2"></i>Technical Findings
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="columns-tab" data-bs-toggle="tab" data-bs-target="#columns" type="button" role="tab">
+                            <i class="fas fa-table me-2"></i>Column Analysis
+                        </button>
+                    </li>
                 </ul>
                 
                 <div class="tab-content mt-4" id="resultTabsContent">
@@ -73,6 +83,221 @@
                             {% endif %}
                         </div>
                     </div>
+                    
+                    <div class="tab-pane fade" id="findings" role="tabpanel">
+                        <div class="findings-container">
+                            <h4 class="mb-4">Technical Findings</h4>
+                            {% if json_findings %}
+                                {% for finding in json_findings %}
+                                    <div class="finding-card card mb-4">
+                                        <div class="card-header d-flex justify-content-between align-items-center">
+                                            <h5 class="mb-0">
+                                                {% if finding.type == 'sorting_anomaly' %}
+                                                    <i class="fas fa-exclamation-triangle text-danger me-2"></i>
+                                                    Sorting Anomalies
+                                                {% elif finding.type == 'excel_row_movement' %}
+                                                    <i class="fas fa-exchange-alt text-danger me-2"></i>
+                                                    Excel Row Movement Evidence
+                                                {% elif finding.type == 'effect_size_analysis' %}
+                                                    <i class="fas fa-chart-line text-warning me-2"></i>
+                                                    Effect Size Analysis
+                                                {% elif finding.type == 'duplicate_ids' %}
+                                                    <i class="fas fa-copy text-danger me-2"></i>
+                                                    Duplicate IDs
+                                                {% else %}
+                                                    <i class="fas fa-search me-2"></i>
+                                                    {{ finding.type|replace('_', ' ')|title }}
+                                                {% endif %}
+                                            </h5>
+                                            <button class="btn btn-sm btn-outline-secondary toggle-json" 
+                                                    data-target="json-{{ loop.index }}">
+                                                <i class="fas fa-code"></i> Toggle JSON
+                                            </button>
+                                        </div>
+                                        <div class="card-body">
+                                            <div id="json-{{ loop.index }}-formatted" class="formatted-view">
+                                                {% if finding.type == 'sorting_anomaly' %}
+                                                    <p class="alert alert-danger">
+                                                        <strong>Found {{ finding.details|length }} rows that are out of sequence.</strong> 
+                                                        This is strong evidence of manual row manipulation.
+                                                    </p>
+                                                    <div class="table-responsive">
+                                                        <table class="table table-striped">
+                                                            <thead>
+                                                                <tr>
+                                                                    <th>Row</th>
+                                                                    <th>ID</th>
+                                                                    <th>Previous ID</th>
+                                                                    <th>Group</th>
+                                                                    <th>Group Value</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                {% for item in finding.details %}
+                                                                <tr>
+                                                                    <td>{{ item.row_index }}</td>
+                                                                    <td>{{ item.id }}</td>
+                                                                    <td>{{ item.previous_id }}</td>
+                                                                    <td>{{ item.sort_column }}</td>
+                                                                    <td>{{ item.sort_value }}</td>
+                                                                </tr>
+                                                                {% endfor %}
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                {% elif finding.type == 'excel_row_movement' %}
+                                                    <p class="alert alert-danger">
+                                                        <strong>Found direct evidence of row movement in Excel metadata.</strong>
+                                                        The calculation chain shows rows have been physically moved.
+                                                    </p>
+                                                    <div class="table-responsive">
+                                                        <table class="table table-striped">
+                                                            <thead>
+                                                                <tr>
+                                                                    <th>Current Row</th>
+                                                                    <th>Original Position</th>
+                                                                    <th>Evidence</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                {% for item in finding.details %}
+                                                                <tr>
+                                                                    <td>{{ item.row }}</td>
+                                                                    <td>{{ item.likely_original_position }}</td>
+                                                                    <td>{{ item.evidence }}</td>
+                                                                </tr>
+                                                                {% endfor %}
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                {% elif finding.type == 'duplicate_ids' %}
+                                                    <p class="alert alert-warning">
+                                                        <strong>Found {{ finding.details|length }} duplicate IDs.</strong>
+                                                        Duplicate IDs may indicate copying/duplication of data points.
+                                                    </p>
+                                                    <div class="table-responsive">
+                                                        <table class="table table-striped">
+                                                            <thead>
+                                                                <tr>
+                                                                    <th>ID</th>
+                                                                    <th>Count</th>
+                                                                    <th>Row Indices</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                {% for item in finding.details %}
+                                                                <tr>
+                                                                    <td>{{ item.id }}</td>
+                                                                    <td>{{ item.count }}</td>
+                                                                    <td>{{ item.row_indices|join(', ') }}</td>
+                                                                </tr>
+                                                                {% endfor %}
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                {% else %}
+                                                    <!-- Generic rendering for other finding types -->
+                                                    <pre><code class="language-json">{{ finding|tojson(indent=2) }}</code></pre>
+                                                {% endif %}
+                                            </div>
+                                            <div id="json-{{ loop.index }}" class="json-view mt-3" style="display:none;">
+                                                <pre><code class="language-json">{{ finding|tojson(indent=2) }}</code></pre>
+                                            </div>
+                                        </div>
+                                    </div>
+                                {% endfor %}
+                            {% else %}
+                                <div class="alert alert-info">
+                                    No technical findings were extracted from the report.
+                                </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    
+                    <div class="tab-pane fade" id="columns" role="tabpanel">
+                        <div class="columns-container">
+                            <h4 class="mb-4">Data Column Analysis</h4>
+                            {% if json_columns %}
+                                <div class="row">
+                                    {% if json_columns.id_columns %}
+                                    <div class="col-md-6 mb-4">
+                                        <div class="card h-100">
+                                            <div class="card-header bg-info text-white">
+                                                <i class="fas fa-key me-2"></i> ID Columns
+                                            </div>
+                                            <div class="card-body">
+                                                <p class="text-muted small">Columns that uniquely identify observations</p>
+                                                <ul class="list-group list-group-flush">
+                                                    {% for col in json_columns.id_columns %}
+                                                    <li class="list-group-item">{{ col }}</li>
+                                                    {% endfor %}
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    {% endif %}
+                                    
+                                    {% if json_columns.group_columns %}
+                                    <div class="col-md-6 mb-4">
+                                        <div class="card h-100">
+                                            <div class="card-header bg-primary text-white">
+                                                <i class="fas fa-layer-group me-2"></i> Group/Condition Columns
+                                            </div>
+                                            <div class="card-body">
+                                                <p class="text-muted small">Columns that indicate experimental conditions or groups</p>
+                                                <ul class="list-group list-group-flush">
+                                                    {% for col in json_columns.group_columns %}
+                                                    <li class="list-group-item">{{ col }}</li>
+                                                    {% endfor %}
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    {% endif %}
+                                    
+                                    {% if json_columns.outcome_columns %}
+                                    <div class="col-md-6 mb-4">
+                                        <div class="card h-100">
+                                            <div class="card-header bg-success text-white">
+                                                <i class="fas fa-chart-bar me-2"></i> Outcome/Dependent Variables
+                                            </div>
+                                            <div class="card-body">
+                                                <p class="text-muted small">Columns that measure results or outcomes</p>
+                                                <ul class="list-group list-group-flush">
+                                                    {% for col in json_columns.outcome_columns %}
+                                                    <li class="list-group-item">{{ col }}</li>
+                                                    {% endfor %}
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    {% endif %}
+                                    
+                                    {% if json_columns.demographic_columns %}
+                                    <div class="col-md-6 mb-4">
+                                        <div class="card h-100">
+                                            <div class="card-header bg-secondary text-white">
+                                                <i class="fas fa-users me-2"></i> Demographic Columns
+                                            </div>
+                                            <div class="card-body">
+                                                <p class="text-muted small">Columns containing participant demographics</p>
+                                                <ul class="list-group list-group-flush">
+                                                    {% for col in json_columns.demographic_columns %}
+                                                    <li class="list-group-item">{{ col }}</li>
+                                                    {% endfor %}
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            {% else %}
+                                <div class="alert alert-info">
+                                    No column categories were extracted from the report.
+                                </div>
+                            {% endif %}
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -86,6 +311,7 @@
         // Apply styling to code blocks
         document.querySelectorAll('.markdown-body pre code').forEach(block => {
             block.classList.add('p-3', 'rounded');
+            hljs.highlightElement(block);
         });
         
         // Make sure image paths work correctly
@@ -94,6 +320,30 @@
             if (!imgSrc.includes('file')) {
                 console.log("Fixing image path:", imgSrc);
             }
+        });
+        
+        // Apply syntax highlighting to JSON code blocks
+        document.querySelectorAll('.language-json').forEach(block => {
+            hljs.highlightElement(block);
+        });
+        
+        // Toggle JSON view
+        document.querySelectorAll('.toggle-json').forEach(button => {
+            button.addEventListener('click', function() {
+                const targetId = this.getAttribute('data-target');
+                const jsonView = document.getElementById(targetId);
+                const formattedView = document.getElementById(targetId + '-formatted');
+                
+                if (jsonView.style.display === 'none') {
+                    jsonView.style.display = 'block';
+                    formattedView.style.display = 'none';
+                    this.innerHTML = '<i class="fas fa-table"></i> Show Formatted';
+                } else {
+                    jsonView.style.display = 'none';
+                    formattedView.style.display = 'block';
+                    this.innerHTML = '<i class="fas fa-code"></i> Toggle JSON';
+                }
+            });
         });
     });
 </script>

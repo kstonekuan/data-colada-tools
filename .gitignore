@@ -48,3 +48,5 @@ data/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+results/*
