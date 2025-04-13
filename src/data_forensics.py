@@ -87,11 +87,11 @@ class DataForensics:
                         # Found an out-of-sequence ID
                         row_idx = subset.iloc[i].name
                         anomalies.append({
-                            "row_index": row_idx,
-                            "id": ids[i],
-                            "previous_id": ids[i-1],
+                            "row_index": int(row_idx),
+                            "id": int(ids[i]) if pd.api.types.is_integer_dtype(type(ids[i])) else ids[i],
+                            "previous_id": int(ids[i-1]) if pd.api.types.is_integer_dtype(type(ids[i-1])) else ids[i-1],
                             "sort_column": col,
-                            "sort_value": val
+                            "sort_value": val if not pd.api.types.is_integer_dtype(type(val)) else int(val)
                         })
         
         return anomalies
@@ -105,9 +105,9 @@ class DataForensics:
         for dup_id in duplicates:
             rows = self.df[self.df[id_col] == dup_id]
             duplicate_details.append({
-                "id": dup_id,
+                "id": int(dup_id) if pd.api.types.is_integer_dtype(type(dup_id)) else dup_id,
                 "count": len(rows),
-                "row_indices": rows.index.tolist()
+                "row_indices": [int(idx) for idx in rows.index.tolist()]
             })
             
         return duplicate_details
@@ -202,7 +202,7 @@ class DataForensics:
                 
             # Look for outliers using Z-score
             z_scores = np.abs((self.df[col] - self.df[col].mean()) / self.df[col].std())
-            outliers = self.df[z_scores > 3].index.tolist()
+            outliers = [int(idx) for idx in self.df[z_scores > 3].index.tolist()]
             
             if outliers:
                 self.findings.append({
@@ -280,11 +280,11 @@ class DataForensics:
                     ratio = float('inf') if effect_size_suspicious != 0 else float('nan')
                 
                 results[var] = {
-                    "effect_size_suspicious": effect_size_suspicious,
-                    "effect_size_non_suspicious": effect_size_non_suspicious,
-                    "ratio": ratio,
-                    "t_statistic": t_stat,
-                    "p_value": p_value
+                    "effect_size_suspicious": float(effect_size_suspicious),
+                    "effect_size_non_suspicious": float(effect_size_non_suspicious),
+                    "ratio": float(ratio),
+                    "t_statistic": float(t_stat),
+                    "p_value": float(p_value)
                 }
                 
                 # Create visualization

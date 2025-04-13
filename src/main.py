@@ -155,7 +155,7 @@ def detect_data_manipulation(client, data_path, output_dir=None):
             # If Excel file, check calc chain for evidence of row movement
             if file_ext == ".xlsx":
                 with excel_forensics as ef:
-                    suspicious_rows = [issue["row_index"] for issue in sorting_issues]
+                    suspicious_rows = [int(issue["row_index"]) for issue in sorting_issues]
                     movement_evidence = ef.analyze_row_movement(suspicious_rows)
 
                     if movement_evidence:
@@ -167,7 +167,7 @@ def detect_data_manipulation(client, data_path, output_dir=None):
             # Check if suspicious observations show strong effect in the expected direction
             if column_categories["outcome_columns"]:
                 try:
-                    suspicious_rows = [issue["row_index"] for issue in sorting_issues]
+                    suspicious_rows = [int(issue["row_index"]) for issue in sorting_issues]
                     effects = forensics.analyze_suspicious_observations(
                         suspicious_rows, group_col, column_categories["outcome_columns"]
                     )
