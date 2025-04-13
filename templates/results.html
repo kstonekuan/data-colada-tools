@@ -314,12 +314,29 @@
             hljs.highlightElement(block);
         });
         
-        // Make sure image paths work correctly
+        // Make sure image paths work correctly and add controls
         document.querySelectorAll('.markdown-body img').forEach(img => {
             const imgSrc = img.getAttribute('src');
             if (!imgSrc.includes('file')) {
                 console.log("Fixing image path:", imgSrc);
             }
+            
+            // Add click-to-expand functionality
+            img.style.cursor = 'pointer';
+            img.setAttribute('data-original-width', img.style.maxWidth || '70%');
+            
+            img.addEventListener('click', function() {
+                const isExpanded = this.getAttribute('data-expanded') === 'true';
+                if (isExpanded) {
+                    // Restore original size
+                    this.style.maxWidth = this.getAttribute('data-original-width');
+                    this.setAttribute('data-expanded', 'false');
+                } else {
+                    // Expand to full width
+                    this.style.maxWidth = '100%';
+                    this.setAttribute('data-expanded', 'true');
+                }
+            });
         });
         
         // Apply syntax highlighting to JSON code blocks
