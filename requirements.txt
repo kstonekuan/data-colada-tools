@@ -7,3 +7,7 @@ scipy>=1.7.0
 python-dotenv>=1.0.0
 openpyxl>=3.0.0
 statsmodels>=0.13.0
+flask>=2.0.0
+flask-wtf>=1.0.0
+werkzeug>=2.0.0
+markdown>=3.0.0

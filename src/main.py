@@ -199,10 +199,11 @@ My analysis has found the following potential issues:
 {findings_json}
 
 Based on these findings:
-1. Assess the likelihood that this data has been manipulated
-2. Explain what manipulation techniques may have been used
-3. Discuss the patterns in the suspicious observations - do they show a particularly strong effect?
-4. Provide a detailed explanation of why these patterns are unlikely to occur naturally
+1. Start your response with a manipulation rating on a scale of 1-10, with 10 being absolutely certain the data was manipulated and 1 being no evidence of manipulation. Format this exactly as: "MANIPULATION_RATING: [1-10]"
+2. Assess the likelihood that this data has been manipulated
+3. Explain what manipulation techniques may have been used
+4. Discuss the patterns in the suspicious observations - do they show a particularly strong effect?
+5. Provide a detailed explanation of why these patterns are unlikely to occur naturally
 
 Reference: The article "Data Colada" describes a case where researchers found evidence of manipulation in a dataset about dishonesty research. They found:
 - Rows that were out of order when sorted by ID within experimental conditions

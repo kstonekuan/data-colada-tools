@@ -1,0 +1,100 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-md-12">
+        <a href="{{ url_for('index') }}" class="btn btn-secondary mb-3">
+            <i class="fas fa-arrow-left me-2"></i>Back to Upload
+        </a>
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h4 class="mb-0">
+                        <i class="fas fa-search me-2"></i>
+                        Analysis Results: {{ analysis.filename }}
+                    </h4>
+                    {% if manipulation_rating is not none %}
+                    <div class="manipulation-rating">
+                        <span class="badge {% if manipulation_rating >= 8 %}bg-danger{% elif manipulation_rating >= 5 %}bg-warning text-dark{% else %}bg-success{% endif %} p-2">
+                            <i class="fas {% if manipulation_rating >= 8 %}fa-exclamation-triangle{% elif manipulation_rating >= 5 %}fa-exclamation-circle{% else %}fa-check-circle{% endif %} me-1"></i>
+                            Manipulation Score: {{ manipulation_rating }}/10
+                        </span>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="card-body">
+                <ul class="nav nav-tabs" id="resultTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="report-tab" data-bs-toggle="tab" data-bs-target="#report" type="button" role="tab">
+                            <i class="fas fa-file-alt me-2"></i>Report
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="visualizations-tab" data-bs-toggle="tab" data-bs-target="#visualizations" type="button" role="tab">
+                            <i class="fas fa-chart-bar me-2"></i>Visualizations
+                        </button>
+                    </li>
+                </ul>
+                
+                <div class="tab-content mt-4" id="resultTabsContent">
+                    <div class="tab-pane fade show active" id="report" role="tabpanel">
+                        <div class="report-container">
+                            <div id="report-content">
+                                {% autoescape false %}
+                                <div class="markdown-body">{{ report_html }}</div>
+                                {% endautoescape %}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="tab-pane fade" id="visualizations" role="tabpanel">
+                        <div class="row">
+                            {% if images|length > 0 %}
+                                {% for image in images %}
+                                <div class="col-md-6 mb-4">
+                                    <div class="card visualization-card">
+                                        <div class="card-header">
+                                            {{ image|replace('.png','')|replace('_',' ')|title }}
+                                        </div>
+                                        <div class="card-body">
+                                            <img src="{{ url_for('get_file', analysis_id=analysis_id, filename=image) }}" 
+                                                 alt="{{ image }}" class="img-fluid">
+                                        </div>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            {% else %}
+                                <div class="col-12">
+                                    <div class="alert alert-info">
+                                        No visualizations were generated for this analysis.
+                                    </div>
+                                </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Apply styling to code blocks
+        document.querySelectorAll('.markdown-body pre code').forEach(block => {
+            block.classList.add('p-3', 'rounded');
+        });
+        
+        // Make sure image paths work correctly
+        document.querySelectorAll('.markdown-body img').forEach(img => {
+            const imgSrc = img.getAttribute('src');
+            if (!imgSrc.includes('file')) {
+                console.log("Fixing image path:", imgSrc);
+            }
+        });
+    });
+</script>
+{% endblock %}

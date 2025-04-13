@@ -1,0 +1,197 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="jumbotron">
+    <h1 class="display-5">Data Forensics Analysis Tool</h1>
+    <p class="lead">
+        Upload your dataset to detect potential data manipulation patterns.
+        This tool analyzes datasets for statistical anomalies, sorting issues, and other patterns
+        that may indicate data has been manipulated.
+    </p>
+</div>
+
+<div class="row">
+    <div class="col-md-8 offset-md-2">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Upload a Dataset for Analysis</h5>
+                <p class="card-text">
+                    Supported file formats: Excel (.xlsx), CSV (.csv), Stata (.dta)
+                </p>
+                
+                <form action="{{ url_for('upload_file') }}" method="post" enctype="multipart/form-data" id="upload-form">
+                    <div class="upload-container" id="upload-area">
+                        <div class="upload-icon">
+                            <i class="fas fa-file-upload"></i>
+                        </div>
+                        <h5>Drag & Drop your file here</h5>
+                        <p>or</p>
+                        <input type="file" id="file" name="file" class="d-none">
+                        <button type="button" class="btn btn-primary" id="browse-btn">Browse Files</button>
+                        <div id="file-name"></div>
+                    </div>
+                    
+                    <div class="text-center">
+                        <button type="submit" class="btn btn-success btn-lg" id="analyze-btn" disabled>
+                            <i class="fas fa-search me-2"></i>Analyze Data
+                        </button>
+                    </div>
+                </form>
+                
+                <div class="loading" id="loading-indicator">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <h5 class="mt-3">Forensic Analysis in Progress</h5>
+                    <div class="analysis-steps mt-3">
+                        <div class="step" id="step-1">
+                            <span class="badge bg-secondary step-badge">1</span>
+                            <span class="step-text">Uploading and processing your Excel file</span>
+                        </div>
+                        <div class="step mt-2" id="step-2">
+                            <span class="badge bg-secondary step-badge">2</span>
+                            <span class="step-text">Analyzing data patterns and identifying suspicious observations</span>
+                        </div>
+                        <div class="step mt-2" id="step-3">
+                            <span class="badge bg-secondary step-badge">3</span>
+                            <span class="step-text">Examining Excel metadata for evidence of manipulation</span>
+                        </div>
+                        <div class="step mt-2" id="step-4">
+                            <span class="badge bg-secondary step-badge">4</span>
+                            <span class="step-text">Calculating statistical anomalies and effect sizes</span>
+                        </div>
+                        <div class="step mt-2" id="step-5">
+                            <span class="badge bg-secondary step-badge">5</span>
+                            <span class="step-text">Generating visualizations of suspicious patterns</span>
+                        </div>
+                        <div class="step mt-2" id="step-6">
+                            <span class="badge bg-secondary step-badge">6</span>
+                            <span class="step-text">Creating comprehensive forensic report with AI analysis</span>
+                        </div>
+                    </div>
+                    <p class="mt-3">This process may take 2-3 minutes depending on file size...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-5">
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h5 class="card-title"><i class="fas fa-search me-2"></i>Anomaly Detection</h5>
+                <p class="card-text">Identifies sorting anomalies, duplicate IDs, and statistical outliers that may indicate manipulation.</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h5 class="card-title"><i class="fas fa-file-excel me-2"></i>Excel Metadata Analysis</h5>
+                <p class="card-text">Examines Excel's internal metadata to detect evidence of row movement between conditions.</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h5 class="card-title"><i class="fas fa-chart-bar me-2"></i>Statistical Analysis</h5>
+                <p class="card-text">Evaluates if suspicious observations show unusually strong effects in the expected direction.</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const uploadForm = document.getElementById('upload-form');
+        const fileInput = document.getElementById('file');
+        const browseBtn = document.getElementById('browse-btn');
+        const analyzeBtn = document.getElementById('analyze-btn');
+        const fileNameDisplay = document.getElementById('file-name');
+        const uploadArea = document.getElementById('upload-area');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const steps = document.querySelectorAll('.step');
+        
+        // Handle browse button click
+        browseBtn.addEventListener('click', function() {
+            fileInput.click();
+        });
+        
+        // Handle file selection
+        fileInput.addEventListener('change', function() {
+            if (fileInput.files.length > 0) {
+                fileNameDisplay.textContent = 'Selected file: ' + fileInput.files[0].name;
+                analyzeBtn.disabled = false;
+            } else {
+                fileNameDisplay.textContent = '';
+                analyzeBtn.disabled = true;
+            }
+        });
+        
+        // Handle drag and drop
+        uploadArea.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            uploadArea.style.backgroundColor = '#e9ecef';
+        });
+        
+        uploadArea.addEventListener('dragleave', function() {
+            uploadArea.style.backgroundColor = '#f8f9fa';
+        });
+        
+        uploadArea.addEventListener('drop', function(e) {
+            e.preventDefault();
+            uploadArea.style.backgroundColor = '#f8f9fa';
+            
+            if (e.dataTransfer.files.length > 0) {
+                fileInput.files = e.dataTransfer.files;
+                fileNameDisplay.textContent = 'Selected file: ' + e.dataTransfer.files[0].name;
+                analyzeBtn.disabled = false;
+            }
+        });
+        
+        // Show loading indicator and animate steps on form submit
+        uploadForm.addEventListener('submit', function() {
+            loadingIndicator.style.display = 'block';
+            browseBtn.disabled = true;
+            analyzeBtn.disabled = true;
+            
+            // Simulate progress through the steps
+            let currentStep = 0;
+            
+            function activateNextStep() {
+                if (currentStep < steps.length) {
+                    // Reset previous step if it exists
+                    if (currentStep > 0) {
+                        steps[currentStep-1].classList.remove('active');
+                        steps[currentStep-1].querySelector('.step-badge').classList.remove('bg-primary');
+                        steps[currentStep-1].querySelector('.step-badge').classList.add('bg-success');
+                    }
+                    
+                    // Activate current step
+                    steps[currentStep].classList.add('active');
+                    steps[currentStep].querySelector('.step-badge').classList.remove('bg-secondary');
+                    steps[currentStep].querySelector('.step-badge').classList.add('bg-primary');
+                    
+                    currentStep++;
+                    
+                    // Schedule next step
+                    if (currentStep < steps.length) {
+                        setTimeout(activateNextStep, getRandomTime(2000, 6000));
+                    }
+                }
+            }
+            
+            function getRandomTime(min, max) {
+                return Math.floor(Math.random() * (max - min + 1)) + min;
+            }
+            
+            // Start the step animation after a short delay
+            setTimeout(activateNextStep, 500);
+        });
+    });
+</script>
+{% endblock %}
