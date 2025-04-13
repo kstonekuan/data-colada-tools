@@ -765,6 +765,13 @@ def upload_file():
     paper_file = None
     paper_path = None
     has_paper = False
+    paper_is_text = False
+    
+    # Check for text-based article content
+    article_text = request.form.get('article-text', '')
+    if article_text and len(article_text.strip()) > 100:  # Ensure we have substantial content
+        paper_is_text = True
+        print(f"Article text provided ({len(article_text)} characters)")
     
     # We always have include-paper field set to 'on' now
     if 'paper-file' in request.files:
@@ -777,7 +784,8 @@ def upload_file():
         else:
             # No PDF uploaded or wrong file type, continue without paper
             paper_file = None
-            print("No valid research paper uploaded or paper was not provided")
+            if not paper_is_text:
+                print("No valid research paper uploaded or paper was not provided")
 
     try:
         # Create a unique folder for this analysis
@@ -790,12 +798,19 @@ def upload_file():
         file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         file.save(file_path)
         
-        # Save paper file if provided
+        # Handle paper content (either file or text)
         if has_paper and paper_file:
             paper_filename = secure_filename(paper_file.filename)
             paper_path = os.path.join(analysis_folder, paper_filename)
             paper_file.save(paper_path)
             print(f"Saved research paper to: {paper_path}")
+        elif paper_is_text:
+            # Save article text to a text file
+            paper_path = os.path.join(analysis_folder, "article_text.txt")
+            with open(paper_path, 'w') as text_file:
+                text_file.write(article_text)
+            has_paper = True
+            print(f"Saved article text to: {paper_path}")
 
         # Initialize Claude client
         client = setup_client()
@@ -838,6 +853,45 @@ def upload_file():
         else:
             report = detect_data_manipulation(client, file_path, analysis_folder)
 
+        # Store original dataset for browsing
+        try:
+            ext = os.path.splitext(file_path)[1].lower()
+            original_columns = []
+            original_data = []
+            
+            if ext == ".xlsx":
+                df = pd.read_excel(file_path)
+                original_columns = df.columns.tolist()
+                original_data = df.values.tolist()
+            elif ext == ".csv":
+                df = pd.read_csv(file_path)
+                original_columns = df.columns.tolist()
+                original_data = df.values.tolist()
+            elif ext == ".dta":
+                df = pd.read_stata(file_path)
+                original_columns = df.columns.tolist()
+                original_data = df.values.tolist()
+            elif ext == ".sav":
+                import pyreadstat
+                df, meta = pyreadstat.read_sav(file_path, encoding=None)
+                original_columns = df.columns.tolist()
+                original_data = df.values.tolist()
+                
+            # Convert non-serializable values (like numpy types) to Python native types
+            for i, row in enumerate(original_data):
+                for j, val in enumerate(row):
+                    if isinstance(val, (np.integer, np.floating)):
+                        original_data[i][j] = val.item()
+                    elif isinstance(val, np.ndarray):
+                        original_data[i][j] = val.tolist()
+                    elif pd.isna(val):
+                        original_data[i][j] = None
+                        
+        except Exception as e:
+            print(f"Error preparing original data for browser: {e}")
+            original_columns = []
+            original_data = []
+            
         # Store analysis information
         report_filename = f"report_{filename}.md"
         analysis_info = {
@@ -848,6 +902,9 @@ def upload_file():
             "report_filename": report_filename,
             "has_paper": has_paper,
             "paper_path": paper_path if paper_path else None,
+            "paper_is_text": paper_is_text,
+            "original_columns": original_columns,
+            "original_data": original_data
         }
 
         # Save analysis metadata
