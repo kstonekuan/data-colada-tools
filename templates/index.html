@@ -24,19 +24,42 @@
                         <div class="upload-icon">
                             <i class="fas fa-file-upload"></i>
                         </div>
-                        <h5>Drag & Drop your file here</h5>
+                        <h5>Drag & Drop your dataset file here</h5>
                         <p>or</p>
                         <input type="file" id="file" name="file" class="d-none">
-                        <button type="button" class="btn btn-primary" id="browse-btn">Browse Files</button>
+                        <button type="button" class="btn btn-outline-primary" id="browse-btn">
+                            <i class="fas fa-folder-open me-1"></i>Browse Files
+                        </button>
                         <div id="file-name"></div>
                     </div>
                     
-                    <div class="text-center">
-                        <button type="submit" class="btn btn-success btn-lg" id="analyze-btn" disabled>
+                    <div class="mt-3 mb-3">
+                        <label class="form-label">
+                            <i class="fas fa-file-pdf me-1"></i> <strong>Research Paper Context</strong> (optional)
+                        </label>
+                        <p class="small text-muted mb-2">Adding the original research paper helps the AI understand what to look for in your data</p>
+                        <input type="hidden" name="include-paper" value="on" id="include-paper">
+                    </div>
+                    
+                    <div id="paper-upload-area" class="upload-container mt-2 border-info" style="padding: 20px;">
+                        <div class="upload-icon" style="font-size: 24px;">
+                            <i class="fas fa-file-pdf"></i>
+                        </div>
+                        <h6>Drag & Drop research paper (PDF) here</h6>
+                        <p class="small">The research paper is optional but helps provide better analysis</p>
+                        <input type="file" id="paper-file" name="paper-file" class="d-none" accept=".pdf">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="browse-paper-btn">
+                            <i class="fas fa-file-pdf me-1"></i>Select PDF
+                        </button>
+                        <div id="paper-file-name" class="mt-2"></div>
+                    </div>
+                    
+                    <div class="text-center mt-4">
+                        <button type="submit" class="btn btn-success btn-lg shadow-sm" id="analyze-btn" disabled>
                             <i class="fas fa-search me-2"></i>Analyze Data
                         </button>
                         <div class="mt-3">
-                            <a href="{{ url_for('previous_results') }}" class="btn btn-outline-secondary">
+                            <a href="{{ url_for('previous_results') }}" class="btn btn-outline-secondary shadow-sm">
                                 <i class="fas fa-history me-1"></i>View Previous Analyses
                             </a>
                         </div>
@@ -121,6 +144,13 @@
         const loadingIndicator = document.getElementById('loading-indicator');
         const steps = document.querySelectorAll('.step');
         
+        // Paper upload elements
+        const includePaperCheckbox = document.getElementById('include-paper');
+        const paperUploadArea = document.getElementById('paper-upload-area');
+        const paperFileInput = document.getElementById('paper-file');
+        const browsePaperBtn = document.getElementById('browse-paper-btn');
+        const paperFileNameDisplay = document.getElementById('paper-file-name');
+        
         // Handle browse button click
         browseBtn.addEventListener('click', function() {
             fileInput.click();
@@ -129,11 +159,15 @@
         // Handle file selection
         fileInput.addEventListener('change', function() {
             if (fileInput.files.length > 0) {
-                fileNameDisplay.textContent = 'Selected file: ' + fileInput.files[0].name;
+                fileNameDisplay.innerHTML = '<span class="badge bg-success p-2 shadow-sm mt-2">' +
+                    '<i class="fas fa-check-circle me-1"></i> Selected: ' + 
+                    fileInput.files[0].name + '</span>';
                 analyzeBtn.disabled = false;
+                uploadArea.classList.add('border-success');
             } else {
                 fileNameDisplay.textContent = '';
                 analyzeBtn.disabled = true;
+                uploadArea.classList.remove('border-success');
             }
         });
         
@@ -153,8 +187,57 @@
             
             if (e.dataTransfer.files.length > 0) {
                 fileInput.files = e.dataTransfer.files;
-                fileNameDisplay.textContent = 'Selected file: ' + e.dataTransfer.files[0].name;
+                fileNameDisplay.innerHTML = '<span class="badge bg-success p-2 shadow-sm mt-2">' +
+                    '<i class="fas fa-check-circle me-1"></i> Selected: ' + 
+                    e.dataTransfer.files[0].name + '</span>';
                 analyzeBtn.disabled = false;
+                uploadArea.classList.add('border-success');
+            }
+        });
+        
+        // Paper upload area is now always visible by default
+        
+        // Handle paper browse button click
+        browsePaperBtn.addEventListener('click', function() {
+            paperFileInput.click();
+        });
+        
+        // Handle paper file selection
+        paperFileInput.addEventListener('change', function() {
+            if (paperFileInput.files.length > 0) {
+                paperFileNameDisplay.innerHTML = '<span class="badge bg-info text-dark">' + 
+                    '<i class="fas fa-file-pdf me-1"></i> Selected: ' + 
+                    paperFileInput.files[0].name + '</span>';
+            } else {
+                paperFileNameDisplay.textContent = '';
+            }
+        });
+        
+        // Handle paper drag and drop
+        paperUploadArea.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            paperUploadArea.style.backgroundColor = '#e9ecef';
+        });
+        
+        paperUploadArea.addEventListener('dragleave', function() {
+            paperUploadArea.style.backgroundColor = '#f8f9fa';
+        });
+        
+        paperUploadArea.addEventListener('drop', function(e) {
+            e.preventDefault();
+            paperUploadArea.style.backgroundColor = '#f8f9fa';
+            
+            if (e.dataTransfer.files.length > 0) {
+                const file = e.dataTransfer.files[0];
+                if (file.type === 'application/pdf') {
+                    paperFileInput.files = e.dataTransfer.files;
+                    paperFileNameDisplay.innerHTML = '<span class="badge bg-info text-dark">' + 
+                        '<i class="fas fa-file-pdf me-1"></i> Selected: ' + 
+                        file.name + '</span>';
+                } else {
+                    paperFileNameDisplay.innerHTML = '<span class="badge bg-danger">' + 
+                        'Error: Please select a PDF file</span>';
+                }
             }
         });
         
@@ -163,6 +246,7 @@
             loadingIndicator.style.display = 'block';
             browseBtn.disabled = true;
             analyzeBtn.disabled = true;
+            browsePaperBtn.disabled = true;
             
             // Simulate progress through the steps
             let currentStep = 0;

@@ -78,8 +78,8 @@ Respond with JSON in this format:
 Be concise and only include the JSON in your response."""
 
     response = client.messages.create(
-        model="claude-3-opus-20240229",
-        max_tokens=1000,
+        model="claude-3-7-sonnet-latest",
+        max_tokens=4096,
         messages=[{"role": "user", "content": prompt}],
     )
 
@@ -104,9 +104,18 @@ Be concise and only include the JSON in your response."""
         }
 
 
-def detect_data_manipulation(client, data_path, output_dir=None):
-    """Detect potential data manipulation in research data."""
+def detect_data_manipulation(client, data_path, output_dir=None, paper_path=None):
+    """Detect potential data manipulation in research data.
+
+    Args:
+        client: Claude API client
+        data_path: Path to the dataset file
+        output_dir: Directory to save output files
+        paper_path: Optional path to research paper PDF for context
+    """
     print(f"Analyzing data file: {data_path}")
+    if paper_path:
+        print(f"Using research paper for context: {paper_path}")
 
     # Create output directory if needed
     if output_dir and not os.path.exists(output_dir):
@@ -131,27 +140,35 @@ def detect_data_manipulation(client, data_path, output_dir=None):
         try:
             # Try multiple encodings for SPSS files
             import pyreadstat
-            
+
             # Try different encodings
-            encodings = ["latin1", "cp1252", None]  # None lets pyreadstat try to detect encoding
+            encodings = [
+                "latin1",
+                "cp1252",
+                None,
+            ]  # None lets pyreadstat try to detect encoding
             read_success = False
-            
+
             for encoding in encodings:
                 try:
                     df, meta = pyreadstat.read_sav(data_path, encoding=encoding)
                     read_success = True
-                    print(f"Successfully read SPSS file with encoding: {encoding if encoding else 'auto-detected'}")
+                    print(
+                        f"Successfully read SPSS file with encoding: {encoding if encoding else 'auto-detected'}"
+                    )
                     break
                 except Exception as e:
                     last_error = str(e)
                     continue
-            
+
             if not read_success:
                 error_msg = f"Could not read SPSS file with any encoding: {last_error}"
                 print(error_msg)
                 return error_msg
         except ImportError:
-            print("The pyreadstat package is required to read SPSS files. Please install it with 'pip install pyreadstat'")
+            print(
+                "The pyreadstat package is required to read SPSS files. Please install it with 'pip install pyreadstat'"
+            )
             return "The pyreadstat package is required to read SPSS files. Please install it with 'pip install pyreadstat'"
     else:
         print(f"Unsupported file format: {file_ext}")
@@ -181,7 +198,9 @@ def detect_data_manipulation(client, data_path, output_dir=None):
             # If Excel file, check calc chain for evidence of row movement
             if file_ext == ".xlsx":
                 with excel_forensics as ef:
-                    suspicious_rows = [int(issue["row_index"]) for issue in sorting_issues]
+                    suspicious_rows = [
+                        int(issue["row_index"]) for issue in sorting_issues
+                    ]
                     movement_evidence = ef.analyze_row_movement(suspicious_rows)
 
                     if movement_evidence:
@@ -193,13 +212,19 @@ def detect_data_manipulation(client, data_path, output_dir=None):
             # Check if suspicious observations show strong effect in the expected direction
             if column_categories["outcome_columns"]:
                 try:
-                    suspicious_rows = [int(issue["row_index"]) for issue in sorting_issues]
+                    suspicious_rows = [
+                        int(issue["row_index"]) for issue in sorting_issues
+                    ]
                     effects = forensics.analyze_suspicious_observations(
                         suspicious_rows, group_col, column_categories["outcome_columns"]
                     )
-                    
-                    if effects and not (isinstance(effects, dict) and "error" in effects):
-                        findings.append({"type": "effect_size_analysis", "details": effects})
+
+                    if effects and not (
+                        isinstance(effects, dict) and "error" in effects
+                    ):
+                        findings.append(
+                            {"type": "effect_size_analysis", "details": effects}
+                        )
                 except Exception as e:
                     print(f"Error analyzing effect sizes: {e}")
                     # Don't add to findings if there was an error
@@ -216,6 +241,80 @@ def detect_data_manipulation(client, data_path, output_dir=None):
     # Generate Claude prompt with findings
     findings_json = json.dumps(findings, indent=2)
 
+    # Extract text from research paper if provided
+    paper_context = ""
+    if paper_path and os.path.exists(paper_path):
+        try:
+            import PyPDF2
+
+            # Extract text from PDF
+            with open(paper_path, "rb") as pdf_file:
+                pdf_reader = PyPDF2.PdfReader(pdf_file)
+                paper_text = ""
+                for page_num in range(
+                    min(len(pdf_reader.pages), 20)
+                ):  # Extract up to 20 pages
+                    page = pdf_reader.pages[page_num]
+                    paper_text += page.extract_text()
+
+                # If we have text, use another Claude call to extract the most important parts
+                if paper_text:
+                    # Create a prompt to extract the important parts of the research paper without summarizing
+                    extraction_prompt = f"""
+Please extract the most important segments verbatim from this research paper. Do NOT summarize or paraphrase - I need the exact original text.
+
+Focus on identifying and extracting relevant sections that address:
+
+1. The research question or hypothesis (e.g., abstract, introduction statements)
+2. The methodology used (e.g., method sections, experimental design)
+3. The expected findings or hypothesized effects
+4. The research domain and its key concepts
+
+Remove references, citations, acknowledgments, and formatting elements like headers/page numbers, but preserve the exact original text of important content. 
+
+DO NOT summarize or paraphrase - only extract complete sentences and paragraphs directly from the original. The extraction must use only words that appear in the exact same order as in the original text.
+
+Research Paper:
+{paper_text}
+
+Your extraction should ONLY contain original text directly quoted from the paper.
+"""
+                    try:
+                        # Call Claude to extract the key information
+                        print(
+                            "Calling Claude to extract key sections of the research paper..."
+                        )
+                        extraction_response = client.messages.create(
+                            model="claude-3-7-sonnet-latest",
+                            max_tokens=4096,
+                            messages=[{"role": "user", "content": extraction_prompt}],
+                        )
+
+                        paper_extracts = extraction_response.content[0].text.strip()
+
+                        # Add paper context to prompt
+                        if paper_extracts:
+                            paper_context = f"""
+I've also extracted the key sections from the research paper that provide context about the data:
+
+Research Paper Excerpts (Original Text):
+{paper_extracts}
+"""
+                            print(
+                                "Added extracted paper sections to prompt (original text preserved)"
+                            )
+                    except Exception as e:
+                        print(f"Error in Claude summary extraction: {e}")
+                        # Fallback to original method if Claude call fails
+                        paper_excerpt = f"Research Paper (original text excerpt):\n{paper_text[:5000]}"
+                        paper_context = f"I've also extracted text from the research paper that might provide context about the data:\n\n{paper_excerpt}"
+                        print(
+                            "Added raw research paper context to prompt (fallback method)"
+                        )
+        except Exception as e:
+            print(f"Error extracting text from PDF: {e}")
+            # Continue without paper context if there's an error
+
     prompt = f"""I need you to analyze potential data manipulation in a research dataset.
 
 Here are the column categories I've identified:
@@ -223,6 +322,8 @@ Here are the column categories I've identified:
 
 My analysis has found the following potential issues:
 {findings_json}
+
+{paper_context}
 
 Based on these findings:
 1. Start your response with a manipulation rating on a scale of 1-10, with 10 being absolutely certain the data was manipulated and 1 being no evidence of manipulation. Format this exactly as: "MANIPULATION_RATING: [1-10]"
@@ -236,12 +337,14 @@ Reference: The article "Data Colada" describes a case where researchers found ev
 - Evidence in Excel's calcChain.xml showing rows had been moved between conditions
 - The suspicious observations showed extremely strong effects in the predicted direction
 
+If I provided a research paper, use its context to guide your analysis about what kinds of effects or patterns would be considered suspicious for this specific research domain.
+
 Your assessment:"""
 
     print("Generating forensic analysis with Claude...")
     response = client.messages.create(
-        model="claude-3-opus-20240229",
-        max_tokens=4000,
+        model="claude-3-7-sonnet-latest",
+        max_tokens=4096,
         messages=[{"role": "user", "content": prompt}],
     )
 
@@ -301,10 +404,15 @@ Your assessment:"""
                 if column_categories["outcome_columns"]:
                     try:
                         outcome_plot = visualizer.plot_suspicious_vs_normal(
-                            df, group_col, column_categories["outcome_columns"], suspicious_rows
+                            df,
+                            group_col,
+                            column_categories["outcome_columns"],
+                            suspicious_rows,
                         )
                         if outcome_plot:
-                            plots.append({"type": "suspicious_vs_normal", "path": outcome_plot})
+                            plots.append(
+                                {"type": "suspicious_vs_normal", "path": outcome_plot}
+                            )
                             print(f"Created suspicious vs normal plot: {outcome_plot}")
                     except Exception as e:
                         print(f"Error creating suspicious vs normal plot: {e}")
@@ -312,7 +420,10 @@ Your assessment:"""
                     try:
                         # Plot effect sizes
                         effect_plot = visualizer.plot_effect_sizes(
-                            df, group_col, column_categories["outcome_columns"], suspicious_rows
+                            df,
+                            group_col,
+                            column_categories["outcome_columns"],
+                            suspicious_rows,
                         )
                         if effect_plot:
                             plots.append({"type": "effect_sizes", "path": effect_plot})

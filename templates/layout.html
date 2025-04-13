@@ -34,10 +34,26 @@
             text-align: center;
             background-color: #f8f9fa;
             margin: 30px 0;
-            transition: background-color 0.3s;
+            transition: all 0.3s;
         }
         .upload-container:hover {
             background-color: #e9ecef;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+        }
+        .upload-container.border-info {
+            border: 2px dashed #0dcaf0;
+            background-color: rgba(13, 202, 240, 0.05);
+        }
+        .upload-container.border-info:hover {
+            background-color: rgba(13, 202, 240, 0.1);
+        }
+        .upload-container.border-success {
+            border: 2px dashed #198754;
+            background-color: rgba(25, 135, 84, 0.05);
+        }
+        .upload-container.border-success:hover {
+            background-color: rgba(25, 135, 84, 0.1);
         }
         .upload-icon {
             font-size: 48px;

@@ -761,6 +761,24 @@ def upload_file():
         )
         return redirect(request.url)
 
+    # Check if a research paper was uploaded
+    paper_file = None
+    paper_path = None
+    has_paper = False
+    
+    # We always have include-paper field set to 'on' now
+    if 'paper-file' in request.files:
+        paper_file = request.files['paper-file']
+        
+        # Check if a PDF was actually uploaded
+        if paper_file.filename != "" and paper_file.filename.lower().endswith('.pdf'):
+            has_paper = True
+            print(f"Research paper uploaded: {paper_file.filename}")
+        else:
+            # No PDF uploaded or wrong file type, continue without paper
+            paper_file = None
+            print("No valid research paper uploaded or paper was not provided")
+
     try:
         # Create a unique folder for this analysis
         analysis_id = str(uuid.uuid4())
@@ -771,6 +789,13 @@ def upload_file():
         filename = secure_filename(file.filename)
         file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         file.save(file_path)
+        
+        # Save paper file if provided
+        if has_paper and paper_file:
+            paper_filename = secure_filename(paper_file.filename)
+            paper_path = os.path.join(analysis_folder, paper_filename)
+            paper_file.save(paper_path)
+            print(f"Saved research paper to: {paper_path}")
 
         # Initialize Claude client
         client = setup_client()
@@ -807,8 +832,11 @@ def upload_file():
                 flash(f"Error reading SPSS file: {str(e)}. Try converting to CSV format first.")
                 return redirect(url_for("index"))
         
-        # Run analysis
-        report = detect_data_manipulation(client, file_path, analysis_folder)
+        # Run analysis - pass the paper path if a paper was uploaded
+        if has_paper and paper_path:
+            report = detect_data_manipulation(client, file_path, analysis_folder, paper_path=paper_path)
+        else:
+            report = detect_data_manipulation(client, file_path, analysis_folder)
 
         # Store analysis information
         report_filename = f"report_{filename}.md"
@@ -818,6 +846,8 @@ def upload_file():
             "timestamp": os.path.getmtime(file_path),
             "report_path": os.path.join(analysis_folder, report_filename),
             "report_filename": report_filename,
+            "has_paper": has_paper,
+            "paper_path": paper_path if paper_path else None,
         }
 
         # Save analysis metadata
