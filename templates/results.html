@@ -75,6 +75,24 @@
                                         <div class="card-body">
                                             <img src="{{ url_for('get_file', analysis_id=analysis_id, filename=image) }}" 
                                                  alt="{{ image }}" class="img-fluid">
+                                            <div class="viz-explanation mt-3">
+                                                {% set img_name = image|replace('.png','')|replace('_',' ')|lower %}
+                                                {% if 'distribution' in img_name %}
+                                                    <p>Shows how values are distributed across data points, revealing potential outliers or unusual patterns.</p>
+                                                {% elif 'density' in img_name %}
+                                                    <p>Illustrates the density of values, highlighting unusual clusters or gaps that may indicate manipulation.</p>
+                                                {% elif 'boxplot' in img_name %}
+                                                    <p>Displays the median, quartiles, and outliers for each group, making it easy to spot unusual data points.</p>
+                                                {% elif 'scatter' in img_name %}
+                                                    <p>Shows relationships between variables, with suspicious patterns highlighted in red.</p>
+                                                {% elif 'sequence' in img_name %}
+                                                    <p>Shows the sequence of data points, with red markers indicating points that appear out of expected order.</p>
+                                                {% elif 'anomaly' in img_name %}
+                                                    <p>Highlights detected anomalies in the dataset, with suspicious points marked in red.</p>
+                                                {% else %}
+                                                    <p>Visualization of data patterns - click to expand for a closer look.</p>
+                                                {% endif %}
+                                            </div>
                                         </div>
                                     </div>
                                 </div>

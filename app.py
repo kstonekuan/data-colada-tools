@@ -71,7 +71,7 @@ def basic_markdown_to_html(md_text):
 app.config["UPLOAD_FOLDER"] = "uploads"
 app.config["RESULTS_FOLDER"] = "results"
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16MB max file size
-app.config["ALLOWED_EXTENSIONS"] = {"xlsx", "csv", "dta"}
+app.config["ALLOWED_EXTENSIONS"] = {"xlsx", "csv", "dta", "sav"}
 
 # Create necessary directories
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
@@ -102,6 +102,22 @@ def generate_data_preview(file_path, json_findings):
             df = pd.read_csv(file_path)
         elif ext == ".dta":
             df = pd.read_stata(file_path)
+        elif ext == ".sav":
+            try:
+                import pyreadstat
+                df, meta = pyreadstat.read_sav(file_path, encoding="latin1")
+            except ImportError:
+                return "<div class='alert alert-warning'>The pyreadstat package is required to read SPSS (.sav) files. Please install it with 'pip install pyreadstat'.</div>"
+            except Exception as e:
+                try:
+                    # Try alternative encodings if the first attempt fails
+                    df, meta = pyreadstat.read_sav(file_path, encoding="cp1252")
+                except Exception as e2:
+                    try:
+                        # Try with automatic encoding detection
+                        df, meta = pyreadstat.read_sav(file_path, encoding=None)
+                    except Exception as e3:
+                        return f"<div class='alert alert-danger'>Error reading SPSS file: {str(e)}. Try converting the file to CSV format first.</div>"
         else:
             return "<div class='alert alert-warning'>Unsupported file format for preview.</div>"
 
@@ -759,6 +775,38 @@ def upload_file():
         # Initialize Claude client
         client = setup_client()
 
+        # Check for encoding issues with .sav files
+        if filename.lower().endswith('.sav'):
+            try:
+                # Test read the file to verify it can be processed
+                import pyreadstat
+                test_df = None
+                encodings = ["latin1", "cp1252", "utf-8", "iso-8859-1", None]  # Try more encodings, including None for auto-detection
+                
+                for encoding in encodings:
+                    try:
+                        print(f"Trying to read SPSS file with encoding: {encoding}")
+                        test_df, meta = pyreadstat.read_sav(file_path, encoding=encoding)
+                        print(f"Successfully read SPSS file with encoding: {encoding}")
+                        # If successful, break out of the loop
+                        break
+                    except Exception as e:
+                        last_error = str(e)
+                        print(f"Failed with encoding {encoding}: {last_error}")
+                        continue
+                
+                if test_df is None:
+                    raise Exception(f"Could not read SPSS file with any encoding: {last_error}")
+                
+                # Clear memory
+                del test_df
+            except ImportError:
+                flash("The pyreadstat package is required to read SPSS files. Please install it with 'pip install pyreadstat'.")
+                return redirect(url_for("index"))
+            except Exception as e:
+                flash(f"Error reading SPSS file: {str(e)}. Try converting to CSV format first.")
+                return redirect(url_for("index"))
+        
         # Run analysis
         report = detect_data_manipulation(client, file_path, analysis_folder)
 
@@ -858,7 +906,7 @@ def view_results(analysis_id):
                 clean_report,
             )
 
-            # Replace second JSON block (findings)
+            # Replace second JSON block (findings) with more detail
             finding_types = [f["type"] for f in json_findings] if json_findings else []
             finding_count = len(json_findings)
 
@@ -866,9 +914,36 @@ def view_results(analysis_id):
                 finding_summary = ", ".join(
                     [t.replace("_", " ").title() for t in set(finding_types)]
                 )
+                
+                # Create a more detailed explanation based on finding types
+                finding_explanations = []
+                if 'sorting_anomaly' in finding_types:
+                    sorting_anomalies = [f for f in json_findings if f["type"] == "sorting_anomaly"]
+                    if sorting_anomalies and "details" in sorting_anomalies[0]:
+                        anomaly_count = len(sorting_anomalies[0]["details"])
+                        finding_explanations.append(f"<li><strong>Sorting Anomalies:</strong> Found {anomaly_count} rows out of sequence, suggesting manual row manipulation.</li>")
+                
+                if 'excel_row_movement' in finding_types:
+                    excel_findings = [f for f in json_findings if f["type"] == "excel_row_movement"]
+                    if excel_findings and "details" in excel_findings[0]:
+                        movement_count = len(excel_findings[0]["details"])
+                        finding_explanations.append(f"<li><strong>Excel Manipulation:</strong> Direct evidence of {movement_count} rows being moved in Excel.</li>")
+                
+                if 'duplicate_ids' in finding_types:
+                    duplicate_findings = [f for f in json_findings if f["type"] == "duplicate_ids"]
+                    if duplicate_findings and "details" in duplicate_findings[0]:
+                        duplicate_count = len(duplicate_findings[0]["details"])
+                        finding_explanations.append(f"<li><strong>Duplicate IDs:</strong> Found {duplicate_count} duplicate IDs that may indicate copying or duplication.</li>")
+                
+                if 'effect_size_analysis' in finding_types:
+                    finding_explanations.append("<li><strong>Effect Size Analysis:</strong> Statistical analysis of treatment effects shows unusual patterns.</li>")
+                
+                finding_html = "<ul>" + "".join(finding_explanations) + "</ul>" if finding_explanations else ""
+                
                 finding_replacement = f"""<div class="alert alert-warning">
 <strong>Technical Findings:</strong> Detected {finding_count} potential issues: {finding_summary}.
-<em>See the "Technical Findings" tab for detailed analysis.</em>
+{finding_html}
+<em>See the "Technical Findings" tab for detailed analysis and the "Visualizations" tab for graphical evidence.</em>
 </div>"""
                 clean_report = re.sub(
                     r"```json\n" + re.escape(json_blocks[1]) + r"\n```",

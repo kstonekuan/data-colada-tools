@@ -34,6 +34,27 @@ class DataForensics:
             self.df = pd.read_csv(filepath)
         elif ext == ".dta":
             self.df = pd.read_stata(filepath)
+        elif ext == ".sav":
+            try:
+                import pyreadstat
+                
+                # Try different encodings
+                encodings = ["latin1", "cp1252", None]  # None lets pyreadstat try to detect encoding
+                read_success = False
+                
+                for encoding in encodings:
+                    try:
+                        self.df, meta = pyreadstat.read_sav(filepath, encoding=encoding)
+                        read_success = True
+                        break
+                    except Exception as e:
+                        last_error = str(e)
+                        continue
+                
+                if not read_success:
+                    raise ValueError(f"Could not read SPSS file with any encoding: {last_error}")
+            except ImportError:
+                raise ValueError("The pyreadstat package is required to read SPSS files")
         else:
             raise ValueError(f"Unsupported file format: {ext}")
 

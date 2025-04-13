@@ -127,6 +127,32 @@ def detect_data_manipulation(client, data_path, output_dir=None):
         df = pd.read_csv(data_path)
     elif file_ext == ".dta":
         df = pd.read_stata(data_path)
+    elif file_ext == ".sav":
+        try:
+            # Try multiple encodings for SPSS files
+            import pyreadstat
+            
+            # Try different encodings
+            encodings = ["latin1", "cp1252", None]  # None lets pyreadstat try to detect encoding
+            read_success = False
+            
+            for encoding in encodings:
+                try:
+                    df, meta = pyreadstat.read_sav(data_path, encoding=encoding)
+                    read_success = True
+                    print(f"Successfully read SPSS file with encoding: {encoding if encoding else 'auto-detected'}")
+                    break
+                except Exception as e:
+                    last_error = str(e)
+                    continue
+            
+            if not read_success:
+                error_msg = f"Could not read SPSS file with any encoding: {last_error}"
+                print(error_msg)
+                return error_msg
+        except ImportError:
+            print("The pyreadstat package is required to read SPSS files. Please install it with 'pip install pyreadstat'")
+            return "The pyreadstat package is required to read SPSS files. Please install it with 'pip install pyreadstat'"
     else:
         print(f"Unsupported file format: {file_ext}")
         return
