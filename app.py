@@ -556,7 +556,7 @@ def generate_data_preview(file_path, json_findings):
                 # Add ellipsis row
                 html_output += '      <tr class="table-secondary">\n'
                 html_output += f'        <td colspan="{len(df.columns) + 1}" class="text-center">\n'
-                html_output += f'          <em>... {idx - last_idx - 1} rows without issues omitted ...</em>\n'
+                html_output += f'          <em>⋮ ⋮ ⋮ {idx - last_idx - 1} rows without issues omitted ⋮ ⋮ ⋮</em>\n'
                 html_output += '        </td>\n'
                 html_output += '      </tr>\n'
             
