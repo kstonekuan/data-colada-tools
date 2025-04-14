@@ -186,6 +186,32 @@ def generate_data_preview(file_path, json_findings):
                     sort_val = anomaly["sort_value"]
 
                     print(f"Found sorting anomaly at row {row_idx}")
+                    
+                    # Check if the anomaly has out-of-order analysis
+                    out_of_order_info = ""
+                    if "out_of_order_analysis" in anomaly and anomaly["out_of_order_analysis"]:
+                        oo_analysis = anomaly["out_of_order_analysis"]
+                        sorted_by = ", ".join(oo_analysis.get("sorted_by", []))
+                        breaking_pattern = oo_analysis.get("breaking_pattern", "")
+                        
+                        if sorted_by and breaking_pattern:
+                            out_of_order_info = f" | Values appear sorted by {sorted_by}, but {breaking_pattern}"
+                            
+                        # If there are imputed original values, include them
+                        if "imputed_original_values" in oo_analysis and oo_analysis["imputed_original_values"]:
+                            imputed_vals = oo_analysis["imputed_original_values"]
+                            imputed_info = []
+                            
+                            for imp in imputed_vals:
+                                if all(k in imp for k in ["column", "current", "likely_original"]):
+                                    imputed_info.append(f"{imp['column']}: {imp['current']} → {imp['likely_original']}")
+                            
+                            if imputed_info:
+                                out_of_order_info += f" | Likely original values: {', '.join(imputed_info)}"
+                                
+                        # Include statistical impact if available
+                        if "statistical_impact" in oo_analysis and oo_analysis["statistical_impact"]:
+                            out_of_order_info += f" | Statistical impact: {oo_analysis['statistical_impact']}"
 
                     # Mark row as suspicious
                     if row_idx not in suspicious_rows:
@@ -194,7 +220,8 @@ def generate_data_preview(file_path, json_findings):
                         {
                             "type": "sorting_anomaly",
                             "css_class": "sorting-anomaly",
-                            "explanation": f"Sorting anomaly: ID {id_val} comes after ID {prev_id} in group {sort_col}={sort_val}",
+                            "explanation": f"Sorting anomaly: ID {id_val} comes after ID {prev_id} in group {sort_col}={sort_val}{out_of_order_info}",
+                            "out_of_order_analysis": anomaly.get("out_of_order_analysis", {})
                         }
                     )
 
@@ -210,10 +237,41 @@ def generate_data_preview(file_path, json_findings):
                     if id_columns:
                         id_col = id_columns[0]
                         cell_key = f"{row_idx}_{id_col}"
+                        # Base explanation
+                        explanation = f"ID {id_val} out of sequence (previous ID: {prev_id})"
+                        
+                        # Check if we have out-of-order analysis
+                        css_class = "cell-highlight-sorting"
+                        if "out_of_order_analysis" in anomaly and anomaly["out_of_order_analysis"]:
+                            explanation += f" | Potential data manipulation detected"
+                            # Add the out-of-order class to highlight it more prominently 
+                            css_class += " cell-highlight-out-of-order"
+                            
+                            # Add details about specific columns that may have been manipulated
+                            oo_analysis = anomaly["out_of_order_analysis"]
+                            if "imputed_original_values" in oo_analysis and oo_analysis["imputed_original_values"]:
+                                for imp in oo_analysis["imputed_original_values"]:
+                                    explanation += f" | Column {imp['column']} likely altered from {imp['likely_original']} to {imp['current']}"
+                                    
+                                    # Also mark the specific manipulated column cells
+                                    if imp["column"] in df.columns:
+                                        affected_col = imp["column"]
+                                        affected_cell_key = f"{row_idx}_{affected_col}"
+                                        affected_explanation = f"Value {imp['current']} is inconsistent with surrounding values. Likely original value: {imp['likely_original']}"
+                                        
+                                        if "statistical_impact" in oo_analysis:
+                                            affected_explanation += f" | {oo_analysis['statistical_impact']}"
+                                            
+                                        suspicious_cells[affected_cell_key] = {
+                                            "type": "sorting_value_manipulation",
+                                            "css_class": "cell-highlight-out-of-order",
+                                            "explanation": affected_explanation,
+                                        }
+                                    
                         suspicious_cells[cell_key] = {
                             "type": "sorting",
-                            "css_class": "cell-highlight-sorting",
-                            "explanation": f"ID {id_val} out of sequence (previous ID: {prev_id})",
+                            "css_class": css_class,
+                            "explanation": explanation,
                         }
 
             elif finding["type"] == "duplicate_ids":
@@ -299,8 +357,38 @@ def generate_data_preview(file_path, json_findings):
             elif finding["type"] == "claude_detected_anomaly":
                 # Process anomalies detected by Claude in data segments
                 detail = finding["details"]
-                if "row_indices" in detail and detail["row_indices"]:
-                    for row_idx in detail["row_indices"]:
+                print(f"Processing Claude anomaly: {json.dumps(detail, indent=2)}")
+                
+                # Handle both string and list row indices formats
+                row_indices = []
+                if "row_indices" in detail:
+                    if isinstance(detail["row_indices"], list):
+                        row_indices = detail["row_indices"]
+                    elif isinstance(detail["row_indices"], str):
+                        # Try to parse string as a list or as a single value
+                        try:
+                            row_indices = json.loads(detail["row_indices"])
+                            if not isinstance(row_indices, list):
+                                row_indices = [row_indices]
+                        except:
+                            # If JSON parsing fails, treat as a single value
+                            row_indices = [detail["row_indices"]]
+                
+                # If we still don't have row indices, look for "rows" field which might contain range
+                if not row_indices and "rows" in finding:
+                    rows_str = finding["rows"]
+                    # Parse patterns like "100-200" 
+                    range_match = re.match(r"(\d+)-(\d+)", rows_str)
+                    if range_match:
+                        start, end = int(range_match.group(1)), int(range_match.group(2))
+                        # Add a sample of rows from this range to highlight (limit to 10 for performance)
+                        sample_size = min(10, end - start + 1)
+                        sample_indices = list(range(start, start + sample_size))
+                        row_indices = sample_indices
+                        print(f"Using sample of {sample_size} rows from range {rows_str}")
+                
+                if row_indices:
+                    for row_idx in row_indices:
                         try:
                             row_idx = int(row_idx)  # Ensure it's an integer
                             explanation = detail.get(
@@ -310,6 +398,32 @@ def generate_data_preview(file_path, json_findings):
                                 detail.get("columns_involved", ["Unknown"])
                             )
                             severity = detail.get("severity", "N/A")
+
+                            # Add handling for out_of_order_analysis
+                            out_of_order_info = ""
+                            if "out_of_order_analysis" in detail and detail["out_of_order_analysis"]:
+                                oo_analysis = detail["out_of_order_analysis"]
+                                sorted_by = ", ".join(oo_analysis.get("sorted_by", []))
+                                breaking_pattern = oo_analysis.get("breaking_pattern", "")
+                                
+                                if sorted_by and breaking_pattern:
+                                    out_of_order_info = f" | Data appears sorted by {sorted_by}, but {breaking_pattern}"
+                                    
+                                # If there are imputed original values, include them
+                                if "imputed_original_values" in oo_analysis and oo_analysis["imputed_original_values"]:
+                                    imputed_vals = oo_analysis["imputed_original_values"]
+                                    imputed_info = []
+                                    
+                                    for imp in imputed_vals:
+                                        if all(k in imp for k in ["column", "current", "likely_original"]):
+                                            imputed_info.append(f"{imp['column']}: {imp['current']} → {imp['likely_original']}")
+                                    
+                                    if imputed_info:
+                                        out_of_order_info += f" | Likely original values: {', '.join(imputed_info)}"
+                                        
+                                # Include statistical impact if available
+                                if "statistical_impact" in oo_analysis and oo_analysis["statistical_impact"]:
+                                    out_of_order_info += f" | Statistical impact: {oo_analysis['statistical_impact']}"
 
                             print(
                                 f"Found Claude-detected anomaly at row {row_idx}, severity: {severity}"
@@ -321,17 +435,35 @@ def generate_data_preview(file_path, json_findings):
                                 {
                                     "type": "claude_detected_anomaly",
                                     "css_class": "claude-anomaly",
-                                    "explanation": f"{explanation} (Columns: {cols_involved}, Severity: {severity}/10)",
+                                    "explanation": f"{explanation} (Columns: {cols_involved}, Severity: {severity}/10){out_of_order_info}",
+                                    "out_of_order_analysis": detail.get("out_of_order_analysis", {})
                                 }
                             )
 
                             # Mark the specific columns as suspicious
-                            for col in detail.get("columns_involved", []):
+                            columns_to_mark = detail.get("columns_involved", [])
+                            if not columns_to_mark and len(df.columns) > 0:
+                                # If no columns specified, mark the first column 
+                                columns_to_mark = [df.columns[0]]
+                                
+                            for col in columns_to_mark:
                                 if col in df.columns:
                                     cell_key = f"{row_idx}_{col}"
+                                    
+                                    # Check if this is an out-of-order cell
+                                    css_class = "cell-highlight-claude"
+                                    if "out_of_order_analysis" in detail and detail["out_of_order_analysis"]:
+                                        # Check if this specific column is mentioned in imputed values
+                                        oo_analysis = detail["out_of_order_analysis"]
+                                        if "imputed_original_values" in oo_analysis and oo_analysis["imputed_original_values"]:
+                                            for imp in oo_analysis["imputed_original_values"]:
+                                                if imp.get("column") == col:
+                                                    css_class += " cell-highlight-out-of-order"
+                                                    explanation += f" | Original value likely {imp.get('likely_original')} (current: {imp.get('current')})"
+                                    
                                     suspicious_cells[cell_key] = {
                                         "type": "claude_anomaly",
-                                        "css_class": "cell-highlight-claude",
+                                        "css_class": css_class,
                                         "explanation": explanation,
                                     }
                         except Exception as e:
@@ -378,6 +510,9 @@ def generate_data_preview(file_path, json_findings):
                 "title": "Claude AI Detected Anomalies",
                 "rows": [],
                 "description": "Anomalies detected by Claude's direct analysis of data segments",
+                "css_class": "claude-anomaly",
+                "cell_class": "cell-highlight-claude",
+                "border_color": "#6f42c1",  # Purple
             },
         }
 
@@ -452,7 +587,7 @@ def generate_data_preview(file_path, json_findings):
         html_output += '          <div class="d-flex align-items-center">\n'
         html_output += '            <div style="width: 24px; height: 24px; border: 2px solid #6f42c1; margin-right: 8px;"></div>\n'
         html_output += (
-            "            <span><strong>Purple:</strong> Claude AI Anomalies</span>\n"
+            "            <span><strong>Purple:</strong> Claude AI Anomalies (strikethrough = out-of-order values)</span>\n"
         )
         html_output += "          </div>\n"
         html_output += "        </div>\n"
@@ -1316,9 +1451,26 @@ def view_results(analysis_id):
                     ]
                     if sorting_anomalies and "details" in sorting_anomalies[0]:
                         anomaly_count = len(sorting_anomalies[0]["details"])
-                        finding_explanations.append(
-                            f"<li><strong>Sorting Anomalies:</strong> Found {anomaly_count} rows out of sequence, suggesting manual row manipulation.</li>"
-                        )
+                        
+                        # Check if we have any out-of-order analysis 
+                        out_of_order_findings = False
+                        for anomaly in sorting_anomalies:
+                            if "details" in anomaly:
+                                for detail in anomaly["details"]:
+                                    if "out_of_order_analysis" in detail:
+                                        out_of_order_findings = True
+                                        break
+                                if out_of_order_findings:
+                                    break
+                                    
+                        if out_of_order_findings:
+                            finding_explanations.append(
+                                f"<li><strong>Sorting Anomalies:</strong> Found {anomaly_count} rows out of sequence, with <span style='color: #dc3545;'>out-of-order observations</span> that strongly suggest manual data manipulation.</li>"
+                            )
+                        else:
+                            finding_explanations.append(
+                                f"<li><strong>Sorting Anomalies:</strong> Found {anomaly_count} rows out of sequence, suggesting manual row manipulation.</li>"
+                            )
 
                 if "excel_row_movement" in finding_types:
                     excel_findings = [
@@ -1344,6 +1496,39 @@ def view_results(analysis_id):
                     finding_explanations.append(
                         "<li><strong>Effect Size Analysis:</strong> Statistical analysis of treatment effects shows unusual patterns.</li>"
                     )
+                    
+                if "claude_detected_anomaly" in finding_types:
+                    claude_findings = [f for f in json_findings if f["type"] == "claude_detected_anomaly"]
+                    if claude_findings:
+                        anomaly_count = len(claude_findings)
+                        
+                        # Check if we have any out-of-order analysis
+                        out_of_order_findings = False
+                        for finding in claude_findings:
+                            if finding.get("details") and finding["details"].get("out_of_order_analysis"):
+                                out_of_order_findings = True
+                                break
+                                
+                        if out_of_order_findings:
+                            finding_explanations.append(
+                                f"<li><strong>Claude AI Analysis:</strong> Detected {anomaly_count} anomalies in specific data segments, including <span style='color: #6f42c1;'>out-of-order observations</span> that may indicate manual data manipulation.</li>"
+                            )
+                        else:
+                            finding_explanations.append(
+                                f"<li><strong>Claude AI Analysis:</strong> Detected {anomaly_count} anomalies in specific data segments that may indicate manipulation.</li>"
+                            )
+                        
+                if "claude_chunk_analysis" in finding_types:
+                    chunk_findings = [f for f in json_findings if f["type"] == "claude_chunk_analysis"]
+                    if chunk_findings and "details" in chunk_findings[0]:
+                        detail = chunk_findings[0]["details"]
+                        anomaly_count = detail.get("total_anomalies", 0)
+                        chunk_count = detail.get("anomaly_chunks", 0)
+                        anomaly_types_list = detail.get("anomaly_types", [])
+                        anomaly_types_text = ", ".join(anomaly_types_list) if anomaly_types_list else "various anomalies"
+                        finding_explanations.append(
+                            f"<li><strong>Claude Segment Analysis:</strong> Found {anomaly_count} high-confidence anomalies ({anomaly_types_text}) across {chunk_count} data segments.</li>"
+                        )
 
                 finding_html = (
                     "<ul>" + "".join(finding_explanations) + "</ul>"

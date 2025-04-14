@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 def load_config() -> Dict[str, str]:
     """Load configuration from config.json or environment variables.
-    
+
     Returns:
         Dict[str, str]: Configuration dictionary with API keys and other settings
     """
@@ -43,13 +43,13 @@ def load_config() -> Dict[str, str]:
 
 def setup_client(api_key: Optional[str] = None) -> Anthropic:
     """Set up the Claude API client.
-    
+
     Args:
         api_key: Optional API key to override the one in config/environment
-        
+
     Returns:
         Anthropic: Configured Claude API client
-        
+
     Raises:
         ValueError: If no API key is provided in any form
     """
@@ -69,11 +69,11 @@ def setup_client(api_key: Optional[str] = None) -> Anthropic:
 
 def identify_columns(client: Anthropic, df: pd.DataFrame) -> Dict[str, List[str]]:
     """Use Claude to identify and categorize columns in the dataset.
-    
+
     Args:
         client: Claude API client
         df: Pandas DataFrame to analyze
-        
+
     Returns:
         Dict[str, List[str]]: Dictionary mapping column categories to lists of column names
     """
@@ -133,11 +133,11 @@ Be concise and only include the JSON in your response."""
 
 
 def detect_data_manipulation(
-    client: Anthropic, 
-    data_path: str, 
-    output_dir: Optional[str] = None, 
-    paper_path: Optional[str] = None, 
-    use_claude_segmentation: bool = False
+    client: Anthropic,
+    data_path: str,
+    output_dir: Optional[str] = None,
+    paper_path: Optional[str] = None,
+    use_claude_segmentation: bool = False,
 ) -> Optional[str]:
     """Detect potential data manipulation in research data.
 
@@ -147,7 +147,7 @@ def detect_data_manipulation(
         output_dir: Directory to save output files
         paper_path: Optional path to research paper PDF for context
         use_claude_segmentation: Whether to use Claude to analyze data in segments
-        
+
     Returns:
         Optional[str]: Report content as a string, or None/error message on failure
     """
@@ -214,7 +214,7 @@ def detect_data_manipulation(
 
     # Use Claude to identify column categories
     column_categories = identify_columns(client, df)
-    
+
     # Always set the DataFrame on the forensics object regardless of whether we have ID/group columns
     forensics.df = df
 
@@ -290,7 +290,9 @@ def detect_data_manipulation(
         # Add a summary of Claude's segment analysis to findings
         if claude_segment_findings:
             # Filter out non-dictionary items and count high-confidence anomalies
-            valid_findings: List[Dict[str, Any]] = [f for f in claude_segment_findings if isinstance(f, dict)]
+            valid_findings: List[Dict[str, Any]] = [
+                f for f in claude_segment_findings if isinstance(f, dict)
+            ]
             anomaly_chunks: List[Dict[str, Any]] = [
                 f
                 for f in valid_findings
@@ -345,7 +347,7 @@ def detect_data_manipulation(
                 if paper_text:
                     # Create a prompt to extract the important parts of the research paper without summarizing
                     extraction_prompt = f"""
-Please extract the most important segments verbatim from this research paper. Do NOT summarize or paraphrase - I need the exact original text.
+Extract the most important segments verbatim from this research paper. Do NOT summarize or paraphrase - keep the exact original text.
 
 Focus on identifying and extracting relevant sections that address:
 
@@ -360,8 +362,6 @@ DO NOT summarize or paraphrase - only extract complete sentences and paragraphs 
 
 Research Paper:
 {paper_text}
-
-Your extraction should ONLY contain original text directly quoted from the paper.
 """
                     try:
                         # Call Claude to extract the key information
@@ -514,27 +514,31 @@ Please review the technical findings and visualizations to make your own assessm
         ]
         if error_chunks:
             segment_report += f"⚠️ **Note:** {len(error_chunks)} of {len(sanitized_findings)} chunks had errors during processing.\n\n"
-            
+
             # Add error details to help with debugging
             segment_report += "**Error Details:**\n\n"
             for i, error_chunk in enumerate(error_chunks):
                 error_message = error_chunk.get("error", "Unknown error")
-                chunk_info = f"chunk {error_chunk.get('chunk', i+1)}"
+                chunk_info = f"chunk {error_chunk.get('chunk', i + 1)}"
                 rows_info = error_chunk.get("rows", "unknown rows")
-                
-                segment_report += f"- Error in {chunk_info} ({rows_info}): {error_message}\n"
-                
+
+                segment_report += (
+                    f"- Error in {chunk_info} ({rows_info}): {error_message}\n"
+                )
+
                 # Include raw data snippet if available, for better debugging
                 if "raw_data" in error_chunk and error_chunk["raw_data"]:
                     raw_data = error_chunk["raw_data"]
                     if len(raw_data) > 100:
                         raw_data = raw_data[:100] + "..."
                     segment_report += f"  Raw data: `{raw_data}`\n"
-                
+
                 # Include traceback if available
                 if "traceback" in error_chunk and error_chunk["traceback"]:
-                    segment_report += f"  Details: ```\n{error_chunk['traceback']}\n```\n"
-            
+                    segment_report += (
+                        f"  Details: ```\n{error_chunk['traceback']}\n```\n"
+                    )
+
             segment_report += "\n"
 
         # Add summary (filter out error chunks for anomaly detection)
@@ -702,7 +706,7 @@ Please review the technical findings and visualizations to make your own assessm
 
 def main() -> int:
     """Main entry point for the application.
-    
+
     Returns:
         int: Exit code (0 for success, 1 for error)
     """

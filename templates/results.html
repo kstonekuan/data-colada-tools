@@ -406,6 +406,7 @@
                                                     outliers (z-score > 3)</li>
                                                 <li><span class="badge bg-secondary">Gray</span> - Rows with evidence of
                                                     Excel movement</li>
+                                                <li><span class="badge bg-purple" style="background-color: #6f42c1; color: white;">Purple</span> - Claude AI detected anomalies in data segments</li>
                                             </ul>
                                             <p class="small">Hover over highlighted cells to see details about the
                                                 issue.</p>
@@ -425,6 +426,7 @@
                                             <option value="duplicates">Show Only Duplicate IDs</option>
                                             <option value="outliers">Show Only Statistical Outliers</option>
                                             <option value="excel">Show Only Excel Movement Evidence</option>
+                                            <option value="claude-anomaly">Show Only Claude AI Detected Anomalies</option>
                                         </select>
                                     </div>
                                 </div>
@@ -717,6 +719,9 @@
                         } else if (filterValue === 'excel' && row.className.includes('excel-movement')) {
                             row.style.display = '';
                             console.log('Showing Excel movement row:', row.className);
+                        } else if (filterValue === 'claude-anomaly' && row.className.includes('claude-anomaly')) {
+                            row.style.display = '';
+                            console.log('Showing Claude AI anomaly row:', row.className);
                         }
                     });
 

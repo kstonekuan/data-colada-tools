@@ -89,7 +89,7 @@ class DataForensics:
 
         # Analyze sorting anomalies if sort columns are provided
         if sort_cols and id_col:
-            sorting_issues = self.check_sorting_anomalies(id_col, sort_cols)
+            sorting_issues = self.check_sorting_anomalies(id_col, sort_cols, check_dependent_vars=True)
             if sorting_issues:
                 self.findings.append(
                     {"type": "sorting_anomaly", "details": sorting_issues}
@@ -120,17 +120,27 @@ class DataForensics:
 
         return self.findings
 
-    def check_sorting_anomalies(self, id_col: str, sort_cols: Union[str, List[str]]) -> List[Dict[str, Any]]:
+    def check_sorting_anomalies(self, id_col: str, sort_cols: Union[str, List[str]], 
+                            check_dependent_vars: bool = True) -> List[Dict[str, Any]]:
         """Check for anomalies in sorting order that might indicate manipulation.
         
         Args:
             id_col: Column name for IDs
             sort_cols: Column name(s) for sorting/grouping
+            check_dependent_vars: Whether to look for dependent variables that might be sorted
             
         Returns:
-            List of sorting anomalies found
+            List of sorting anomalies found with enhanced out-of-order analysis
         """
         anomalies = []
+        
+        # Identify potential dependent variables (numeric columns that aren't used for sorting)
+        dependent_vars = []
+        if check_dependent_vars:
+            sort_cols_list = [sort_cols] if isinstance(sort_cols, str) else sort_cols
+            numeric_cols = self.df.select_dtypes(include=["number"]).columns.tolist()
+            dependent_vars = [col for col in numeric_cols 
+                             if col != id_col and col not in sort_cols_list]
 
         # For each sorting level
         if isinstance(sort_cols, str):
@@ -152,23 +162,212 @@ class DataForensics:
                     if ids[i] < ids[i - 1]:
                         # Found an out-of-sequence ID
                         row_idx = subset.iloc[i].name
-                        anomalies.append(
-                            {
-                                "row_index": int(row_idx),
-                                "id": int(ids[i])
-                                if pd.api.types.is_integer_dtype(type(ids[i]))
-                                else ids[i],
-                                "previous_id": int(ids[i - 1])
-                                if pd.api.types.is_integer_dtype(type(ids[i - 1]))
-                                else ids[i - 1],
-                                "sort_column": col,
-                                "sort_value": val
-                                if not pd.api.types.is_integer_dtype(type(val))
-                                else int(val),
-                            }
-                        )
+                        
+                        # Basic anomaly info
+                        anomaly = {
+                            "row_index": int(row_idx),
+                            "id": int(ids[i])
+                            if pd.api.types.is_integer_dtype(type(ids[i]))
+                            else ids[i],
+                            "previous_id": int(ids[i - 1])
+                            if pd.api.types.is_integer_dtype(type(ids[i - 1]))
+                            else ids[i - 1],
+                            "sort_column": col,
+                            "sort_value": val
+                            if not pd.api.types.is_integer_dtype(type(val))
+                            else int(val),
+                        }
+                        
+                        # Check if dependent variables also follow an unusual pattern within this group
+                        if dependent_vars:
+                            out_of_order_analysis = self._analyze_out_of_order_dependent_vars(
+                                subset, row_idx, dependent_vars
+                            )
+                            if out_of_order_analysis:
+                                anomaly["out_of_order_analysis"] = out_of_order_analysis
+                                
+                        anomalies.append(anomaly)
 
         return anomalies
+        
+    def _analyze_out_of_order_dependent_vars(self, subset: pd.DataFrame, row_idx: int, 
+                                           dependent_vars: List[str]) -> Optional[Dict[str, Any]]:
+        """Analyzes potential out-of-order observations for dependent variables.
+        
+        This looks for values in dependent variables that break a strong sorting pattern,
+        which could indicate manual manipulation of values to achieve desired results.
+        
+        Args:
+            subset: DataFrame subset for the current group
+            row_idx: Index of the row that's out of order
+            dependent_vars: List of potential dependent variables to check
+            
+        Returns:
+            Dict with out-of-order analysis if found, None otherwise
+        """
+        # We need at least 5 rows to have a meaningful pattern
+        if len(subset) < 5:
+            return None
+            
+        # Get the row that's out of order
+        row_position = subset.index.get_loc(row_idx)
+        
+        # Check each dependent variable
+        for var in dependent_vars:
+            # Skip if the column doesn't have numeric values
+            if not pd.api.types.is_numeric_dtype(subset[var]):
+                continue
+                
+            # Create a series with all values for this variable
+            values = subset[var].copy()
+            
+            # Check if the variable is sorted (either ascending or descending)
+            is_sorted_asc = all(values.iloc[i] <= values.iloc[i+1] for i in range(len(values)-1) 
+                              if i != row_position-1 and i != row_position)
+            is_sorted_desc = all(values.iloc[i] >= values.iloc[i+1] for i in range(len(values)-1)
+                               if i != row_position-1 and i != row_position)
+            
+            # If values are sorted except around our anomalous row, this is suspicious
+            if is_sorted_asc or is_sorted_desc:
+                # Get the current value
+                current_value = values.iloc[row_position]
+                
+                # Figure out what the value should be to maintain the pattern
+                if row_position > 0 and row_position < len(values) - 1:
+                    prev_value = values.iloc[row_position - 1]
+                    next_value = values.iloc[row_position + 1]
+                    
+                    # For ascending pattern
+                    if is_sorted_asc:
+                        # Value should be between prev and next in sorted order
+                        if current_value > next_value or current_value < prev_value:
+                            likely_original = (prev_value + next_value) / 2
+                            
+                            # Calculate statistical impact - does this anomaly create/strengthen a correlation?
+                            # Get the mean for this variable when grouped by a boolean representation of the sorting column
+                            variable_difference = self._calculate_statistical_impact(subset, var, current_value, likely_original)
+                            
+                            return {
+                                "sorted_by": [var],
+                                "breaking_pattern": f"value {current_value} breaks ascending pattern",
+                                "imputed_original_values": [{
+                                    "row_index": int(row_idx),
+                                    "column": var,
+                                    "current": float(current_value),
+                                    "likely_original": float(likely_original)
+                                }],
+                                "statistical_impact": variable_difference
+                            }
+                    
+                    # For descending pattern
+                    elif is_sorted_desc:
+                        # Value should be between prev and next in sorted order
+                        if current_value < next_value or current_value > prev_value:
+                            likely_original = (prev_value + next_value) / 2
+                            
+                            # Calculate statistical impact
+                            variable_difference = self._calculate_statistical_impact(subset, var, current_value, likely_original)
+                            
+                            return {
+                                "sorted_by": [var],
+                                "breaking_pattern": f"value {current_value} breaks descending pattern",
+                                "imputed_original_values": [{
+                                    "row_index": int(row_idx),
+                                    "column": var,
+                                    "current": float(current_value),
+                                    "likely_original": float(likely_original)
+                                }],
+                                "statistical_impact": variable_difference
+                            }
+        
+        # No patterns found
+        return None
+        
+    def _calculate_statistical_impact(self, subset: pd.DataFrame, var: str, 
+                                    current_value: float, likely_original: float) -> str:
+        """Calculate the statistical impact of an out-of-order value.
+        
+        Args:
+            subset: DataFrame subset for the current group
+            var: Variable name
+            current_value: Current value in the dataset
+            likely_original: Likely original value before manipulation
+            
+        Returns:
+            String describing the statistical impact
+        """
+        try:
+            # Make a copy to avoid modifying the original data
+            subset_copy = subset.copy()
+            
+            # Find the row with the current value
+            row_with_value = subset_copy[subset_copy[var] == current_value]
+            
+            # If we don't find the row, we can't calculate impact
+            if len(row_with_value) == 0:
+                return "Impact cannot be calculated"
+                
+            # Get original mean and standard deviation
+            original_mean = subset_copy[var].mean()
+            original_std = subset_copy[var].std()
+            
+            # Identify a categorical column that might be a treatment indicator
+            categorical_cols = subset_copy.select_dtypes(include=["object", "category"]).columns.tolist()
+            
+            # Also include binary numeric columns (0/1)
+            for col in subset_copy.select_dtypes(include=["number"]).columns:
+                if set(subset_copy[col].unique()).issubset({0, 1}):
+                    categorical_cols.append(col)
+            
+            # If we don't have any treatment indicators, just report the impact on mean
+            if not categorical_cols:
+                # Replace the value
+                row_idx = row_with_value.index[0]
+                subset_copy.at[row_idx, var] = likely_original
+                
+                # Calculate new statistics
+                new_mean = subset_copy[var].mean()
+                new_std = subset_copy[var].std()
+                
+                mean_change = ((new_mean - original_mean) / original_mean) * 100
+                std_change = ((new_std - original_std) / original_std) * 100
+                
+                return f"Mean would change by {mean_change:.1f}%, SD by {std_change:.1f}%"
+            
+            # Try each categorical column as a potential treatment indicator
+            impacts = []
+            for cat_col in categorical_cols:
+                if subset_copy[cat_col].nunique() != 2:
+                    continue
+                    
+                # Get the two groups
+                groups = subset_copy[cat_col].unique()
+                
+                # Calculate original difference between groups
+                group_means = subset_copy.groupby(cat_col)[var].mean()
+                original_diff = abs(group_means.max() - group_means.min())
+                
+                # Replace the value
+                row_idx = row_with_value.index[0]
+                treatment_group = subset_copy.loc[row_idx, cat_col]
+                subset_copy.at[row_idx, var] = likely_original
+                
+                # Calculate new difference
+                new_group_means = subset_copy.groupby(cat_col)[var].mean()
+                new_diff = abs(new_group_means.max() - new_group_means.min())
+                
+                # Calculate percent change in difference
+                if original_diff > 0:
+                    pct_change = ((original_diff - new_diff) / original_diff) * 100
+                    impacts.append(f"Difference between groups in {cat_col} would decrease by {pct_change:.1f}%")
+            
+            if impacts:
+                return "; ".join(impacts)
+            else:
+                return "No significant impact on group differences"
+                
+        except Exception as e:
+            return f"Error calculating impact: {str(e)}"
 
     def check_duplicate_ids(self, id_col: str) -> List[Dict[str, Any]]:
         """Check for duplicate ID values that might indicate manipulation.
@@ -1386,16 +1585,25 @@ may indicate row movement or manipulation in Excel.
             }
 
 Look for the following potential anomalies:
-1. Statistical anomalies (unusual patterns, outliers, distributions)
-2. Suspicious repeated values or patterns
-3. Unnaturally perfect distributions
-4. Evidence of data fabrication
-5. Terminal digit anomalies
-6. Uniform spacing patterns
-7. Implausible correlations
-8. Unusual clustering of values
-9. Values that should not logically be present in a column
-10. Any other potential signs of manipulation
+
+1. Out-of-Order Observations:
+   - Check if the data appears to be sorted by one or more columns but has values that are suspiciously out of sequence
+   - Look for rows that break an otherwise perfect sorting pattern (these often indicate manual manipulation)
+   - When values are out of order in an otherwise sorted dataset, reconstruct what the original values likely were
+   - Pay attention to dependent variables that show perfect sorting within groups except for a few "convenient" outliers
+   - Test whether restoring the suspected original values would eliminate statistical significance
+   - Example: If rows are sorted by group (0/1) then by response count, but some values in group 1 break the pattern
+
+2. Statistical anomalies (unusual patterns, outliers, distributions)
+3. Suspicious repeated values or patterns
+4. Unnaturally perfect distributions
+5. Evidence of data fabrication
+6. Terminal digit anomalies
+7. Uniform spacing patterns
+8. Implausible correlations
+9. Unusual clustering of values
+10. Values that should not logically be present in a column
+11. Any other potential signs of manipulation
 
 Return your findings in the following JSON format (ONLY respond with valid JSON):
 {{
@@ -1407,7 +1615,13 @@ Return your findings in the following JSON format (ONLY respond with valid JSON)
       "description": "Detailed description of anomaly",
       "columns_involved": ["col1", "col2"],
       "row_indices": [list of row indices in the chunk, if applicable],
-      "severity": 1-10
+      "severity": 1-10,
+      "out_of_order_analysis": {{
+        "sorted_by": ["column names that appear to be sorted"],
+        "breaking_pattern": "description of how the pattern is broken",
+        "imputed_original_values": [{{"row_index": 0, "column": "col", "current": 0, "likely_original": 0}}],
+        "statistical_impact": "how this affects statistical significance"
+      }}
     }}
   ],
   "explanation": "Overall assessment of the data chunk"

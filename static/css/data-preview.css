@@ -1,0 +1,36 @@
+/* Data Preview Styles */
+
+/* Row highlighting */
+.sorting-anomaly { border: 2px solid #dc3545 !important; }
+.duplicate-id { border: 2px solid #ffc107 !important; }
+.statistical-anomaly { border: 2px solid #0dcaf0 !important; }
+.excel-movement { border: 2px solid #6c757d !important; }
+.claude-anomaly { border: 2px solid #6f42c1 !important; }
+            
+/* Cell highlighting */
+.cell-highlight-sorting { background-color: rgba(220, 53, 69, 0.1) !important; }
+.cell-highlight-duplicate { background-color: rgba(255, 193, 7, 0.1) !important; }
+.cell-highlight-outlier { background-color: rgba(13, 202, 240, 0.1) !important; }
+.cell-highlight-claude { background-color: rgba(111, 66, 193, 0.1) !important; }
+.cell-highlight-out-of-order { 
+    background-color: rgba(111, 66, 193, 0.2) !important; 
+    text-decoration: line-through;
+    position: relative;
+}
+.cell-highlight-out-of-order::after {
+    content: "⚠️";
+    position: absolute;
+    top: 0;
+    right: 2px;
+    font-size: 10px;
+}
+
+/* General styles */
+.suspicious-row:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+/* Tooltip styling */
+[data-bs-toggle="tooltip"] {
+  cursor: help;
+}
