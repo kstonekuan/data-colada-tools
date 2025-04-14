@@ -389,6 +389,34 @@
         #data-search {
             min-width: 250px;
         }
+        /* Styles for user suspicions form */
+        .form-control:focus, .form-select:focus {
+            border-color: #86b7fe;
+            box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+        }
+        [data-bs-toggle="collapse"] {
+            cursor: pointer;
+        }
+        .card-header:hover {
+            background-color: #f1f5f9;
+        }
+        
+        /* Make the multi-select easier to use */
+        select[multiple] {
+            height: auto;
+            min-height: 100px;
+        }
+        
+        /* Add spacing between form elements */
+        .form-label {
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+        }
+        
+        .form-text {
+            margin-top: 0.25rem;
+            color: #6c757d;
+        }
     </style>
 </head>
 <body>

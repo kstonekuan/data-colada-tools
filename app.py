@@ -1235,7 +1235,52 @@ def upload_file():
                 )
                 return redirect(url_for("index"))
 
-        # Run analysis - pass the paper path if a paper was uploaded
+        # Process any user-provided suspicions
+        user_suspicions = None
+        if any(param in request.form for param in ["description", "focus_columns", "treatment_columns", "outcome_columns", "suspicious_rows", "suspect_grouping"]):
+            user_suspicions = {}
+            
+            # Process text fields
+            for field in ["description", "suspect_grouping"]:
+                if field in request.form and request.form[field].strip():
+                    user_suspicions[field] = request.form[field].strip()
+            
+            # Process comma-separated list fields
+            for field in ["focus_columns", "treatment_columns", "outcome_columns"]:
+                if field in request.form and request.form[field].strip():
+                    user_suspicions[field] = [col.strip() for col in request.form[field].split(",") if col.strip()]
+            
+            # Process multi-select fields - use getlist to handle multiple selections
+            if "potential_issues" in request.form:
+                user_suspicions["potential_issues"] = request.form.getlist("potential_issues")
+            
+            # Process suspicious rows (handle ranges like "10-20")
+            if "suspicious_rows" in request.form and request.form["suspicious_rows"].strip():
+                suspicious_rows = []
+                for part in request.form["suspicious_rows"].split(","):
+                    part = part.strip()
+                    if "-" in part:
+                        # Handle range
+                        try:
+                            start, end = part.split("-")
+                            suspicious_rows.extend(range(int(start), int(end) + 1))
+                        except Exception as e:
+                            print(f"Error parsing row range {part}: {e}")
+                    else:
+                        # Handle single row
+                        try:
+                            suspicious_rows.append(int(part))
+                        except Exception as e:
+                            print(f"Error parsing row index {part}: {e}")
+                
+                if suspicious_rows:
+                    user_suspicions["suspicious_rows"] = suspicious_rows
+            
+            # Log what we're passing to the analysis
+            if user_suspicions:
+                print(f"Using user-provided suspicions to guide analysis: {json.dumps(user_suspicions, default=str)}")
+
+        # Run analysis - pass the paper path and suspicions if provided
         if has_paper and paper_path:
             report = detect_data_manipulation(
                 client,
@@ -1243,10 +1288,15 @@ def upload_file():
                 analysis_folder,
                 paper_path=paper_path,
                 use_claude_segmentation=True,
+                user_suspicions=user_suspicions
             )
         else:
             report = detect_data_manipulation(
-                client, file_path, analysis_folder, use_claude_segmentation=True
+                client, 
+                file_path, 
+                analysis_folder, 
+                use_claude_segmentation=True,
+                user_suspicions=user_suspicions
             )
 
         # Store original dataset for browsing

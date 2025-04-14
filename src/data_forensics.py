@@ -31,19 +31,41 @@ class DataForensics:
         self.excel_metadata: Optional[Dict[str, List[Dict[str, Any]]]] = None
 
     def analyze_dataset(self, filepath: str, id_col: Optional[str] = None, 
-                      sort_cols: Optional[Union[str, List[str]]] = None) -> List[Dict[str, Any]]:
+                      sort_cols: Optional[Union[str, List[str]]] = None,
+                      user_suspicions: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Analyze a dataset for potential manipulation.
         
         Args:
             filepath: Path to the dataset file
             id_col: Column name for IDs
             sort_cols: Column name(s) for sorting/grouping
+            user_suspicions: Optional dictionary with user-specified suspicions to check,
+                            format: {
+                                "focus_columns": List[str],  # Columns to prioritize checking
+                                "potential_issues": List[str],  # e.g., "sorting", "out_of_order", "duplicates"
+                                "treatment_columns": List[str],  # Potential treatment indicator columns
+                                "outcome_columns": List[str],  # Outcome variables to analyze
+                                "suspicious_rows": List[int],  # Specific rows to check more carefully
+                                "suspect_grouping": str,  # Potential column to check for group-based manipulation
+                                "description": str  # Free-text description of suspicions
+                            }
             
         Returns:
             List of findings as dictionaries
         """
         self.findings = []
         self.plots = []
+        
+        # Initialize user suspicions with defaults if not provided
+        self.user_suspicions = user_suspicions or {}
+        
+        # Add a entry for the suspicions to the findings list so it's recorded
+        if self.user_suspicions:
+            self.findings.append({
+                "type": "user_suspicions",
+                "details": self.user_suspicions,
+                "note": "User-provided analysis guidance (used as supplementary information only)"
+            })
 
         # Determine file type and read data
         ext = os.path.splitext(filepath)[1].lower()
@@ -89,7 +111,30 @@ class DataForensics:
 
         # Analyze sorting anomalies if sort columns are provided
         if sort_cols and id_col:
-            sorting_issues = self.check_sorting_anomalies(id_col, sort_cols, check_dependent_vars=True)
+            # Check if user has suspicions related to sorting or out-of-order values
+            additional_columns_to_check = []
+            prioritize_out_of_order = False
+            
+            if "potential_issues" in self.user_suspicions:
+                potential_issues = [issue.lower() for issue in self.user_suspicions.get("potential_issues", [])]
+                prioritize_out_of_order = any(issue in ["out of order", "out-of-order", "out_of_order", "sorting"] 
+                                             for issue in potential_issues)
+                
+            if "focus_columns" in self.user_suspicions:
+                additional_columns_to_check = self.user_suspicions.get("focus_columns", [])
+                
+            if "outcome_columns" in self.user_suspicions:
+                additional_columns_to_check.extend(self.user_suspicions.get("outcome_columns", []))
+                
+            # Pass these additional parameters to the sorting anomaly check
+            sorting_issues = self.check_sorting_anomalies(
+                id_col, 
+                sort_cols, 
+                check_dependent_vars=True,
+                prioritize_columns=additional_columns_to_check,
+                prioritize_out_of_order=prioritize_out_of_order
+            )
+            
             if sorting_issues:
                 self.findings.append(
                     {"type": "sorting_anomaly", "details": sorting_issues}
@@ -121,13 +166,17 @@ class DataForensics:
         return self.findings
 
     def check_sorting_anomalies(self, id_col: str, sort_cols: Union[str, List[str]], 
-                            check_dependent_vars: bool = True) -> List[Dict[str, Any]]:
+                            check_dependent_vars: bool = True,
+                            prioritize_columns: Optional[List[str]] = None,
+                            prioritize_out_of_order: bool = False) -> List[Dict[str, Any]]:
         """Check for anomalies in sorting order that might indicate manipulation.
         
         Args:
             id_col: Column name for IDs
             sort_cols: Column name(s) for sorting/grouping
             check_dependent_vars: Whether to look for dependent variables that might be sorted
+            prioritize_columns: Specific columns to prioritize in the out-of-order analysis
+            prioritize_out_of_order: Whether to use more sensitive thresholds for out-of-order detection
             
         Returns:
             List of sorting anomalies found with enhanced out-of-order analysis
@@ -136,11 +185,30 @@ class DataForensics:
         
         # Identify potential dependent variables (numeric columns that aren't used for sorting)
         dependent_vars = []
+        prioritized_vars = []
+        
         if check_dependent_vars:
             sort_cols_list = [sort_cols] if isinstance(sort_cols, str) else sort_cols
             numeric_cols = self.df.select_dtypes(include=["number"]).columns.tolist()
+            
+            # Get all potential dependent variables
             dependent_vars = [col for col in numeric_cols 
                              if col != id_col and col not in sort_cols_list]
+            
+            # If user provided specific columns to prioritize, check those first
+            if prioritize_columns:
+                # Filter to ensure we only include columns that exist and are numeric
+                prioritized_vars = [col for col in prioritize_columns 
+                                  if col in self.df.columns and col in numeric_cols
+                                  and col != id_col and col not in sort_cols_list]
+                
+                # If we're prioritizing, put these columns at the front of the list
+                # We'll still check all columns, but prioritized ones first
+                if prioritized_vars:
+                    # Remove prioritized vars from dependent_vars to avoid duplicates
+                    dependent_vars = [col for col in dependent_vars if col not in prioritized_vars]
+                    # Combine lists with prioritized vars first
+                    dependent_vars = prioritized_vars + dependent_vars
 
         # For each sorting level
         if isinstance(sort_cols, str):
@@ -181,7 +249,9 @@ class DataForensics:
                         # Check if dependent variables also follow an unusual pattern within this group
                         if dependent_vars:
                             out_of_order_analysis = self._analyze_out_of_order_dependent_vars(
-                                subset, row_idx, dependent_vars
+                                subset, row_idx, dependent_vars,
+                                prioritize_out_of_order=prioritize_out_of_order,
+                                prioritized_columns=prioritized_vars if prioritized_vars else None
                             )
                             if out_of_order_analysis:
                                 anomaly["out_of_order_analysis"] = out_of_order_analysis
@@ -191,7 +261,9 @@ class DataForensics:
         return anomalies
         
     def _analyze_out_of_order_dependent_vars(self, subset: pd.DataFrame, row_idx: int, 
-                                           dependent_vars: List[str]) -> Optional[Dict[str, Any]]:
+                                           dependent_vars: List[str],
+                                           prioritize_out_of_order: bool = False,
+                                           prioritized_columns: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
         """Analyzes potential out-of-order observations for dependent variables.
         
         This looks for values in dependent variables that break a strong sorting pattern,
@@ -201,31 +273,57 @@ class DataForensics:
             subset: DataFrame subset for the current group
             row_idx: Index of the row that's out of order
             dependent_vars: List of potential dependent variables to check
+            prioritize_out_of_order: Whether to use more sensitive thresholds for detecting out-of-order patterns
+            prioritized_columns: Specific columns to prioritize and analyze more thoroughly
             
         Returns:
             Dict with out-of-order analysis if found, None otherwise
         """
-        # We need at least 5 rows to have a meaningful pattern
-        if len(subset) < 5:
+        # We need enough rows to have a meaningful pattern
+        # Use a smaller threshold if user suspects out-of-order observations
+        min_rows = 3 if prioritize_out_of_order else 5
+        if len(subset) < min_rows:
             return None
             
         # Get the row that's out of order
         row_position = subset.index.get_loc(row_idx)
         
-        # Check each dependent variable
+        # Check each dependent variable - prioritize the ones specified by the user
         for var in dependent_vars:
             # Skip if the column doesn't have numeric values
             if not pd.api.types.is_numeric_dtype(subset[var]):
                 continue
                 
+            # Is this a prioritized column?
+            is_priority_column = prioritized_columns and var in prioritized_columns
+            
             # Create a series with all values for this variable
             values = subset[var].copy()
             
-            # Check if the variable is sorted (either ascending or descending)
-            is_sorted_asc = all(values.iloc[i] <= values.iloc[i+1] for i in range(len(values)-1) 
-                              if i != row_position-1 and i != row_position)
-            is_sorted_desc = all(values.iloc[i] >= values.iloc[i+1] for i in range(len(values)-1)
-                               if i != row_position-1 and i != row_position)
+            # Adjust tolerance based on whether this is a priority column
+            # For priority columns or when prioritizing out-of-order detection,
+            # we're more lenient in determining if a pattern exists
+            if prioritize_out_of_order or is_priority_column:
+                # For prioritized analysis, allow a small percentage of exceptions
+                allowed_exceptions = max(1, int(len(values) * 0.1))  # Allow up to 10% exceptions
+                
+                # Check if variable is mostly sorted (with some tolerance)
+                exceptions_asc = sum(1 for i in range(len(values)-1) 
+                                  if values.iloc[i] > values.iloc[i+1] and 
+                                  i != row_position-1 and i != row_position)
+                
+                exceptions_desc = sum(1 for i in range(len(values)-1) 
+                                   if values.iloc[i] < values.iloc[i+1] and
+                                   i != row_position-1 and i != row_position)
+                                   
+                is_sorted_asc = exceptions_asc <= allowed_exceptions
+                is_sorted_desc = exceptions_desc <= allowed_exceptions
+            else:
+                # Standard strict check - must be perfectly sorted
+                is_sorted_asc = all(values.iloc[i] <= values.iloc[i+1] for i in range(len(values)-1) 
+                                  if i != row_position-1 and i != row_position)
+                is_sorted_desc = all(values.iloc[i] >= values.iloc[i+1] for i in range(len(values)-1)
+                                   if i != row_position-1 and i != row_position)
             
             # If values are sorted except around our anomalous row, this is suspicious
             if is_sorted_asc or is_sorted_desc:
@@ -1428,18 +1526,24 @@ class DataForensics:
             plt.close()
             self.plots.append({"column": "inlier_distribution", "plot_path": tmp.name})
 
-    def segment_and_analyze_with_claude(self, client: Anthropic, max_rows_per_chunk: int = 300) -> List[Dict[str, Any]]:
+    def segment_and_analyze_with_claude(self, client: Anthropic, max_rows_per_chunk: int = 300,
+                                 user_suspicions: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
         Segment dataset into manageable chunks and use Claude to detect anomalies in each chunk.
 
         Args:
             client: Claude API client
             max_rows_per_chunk: Maximum number of rows per chunk
+            user_suspicions: Optional dictionary with user-specified suspicions to guide analysis
+                            but not bias the results excessively
 
         Returns:
             List[Dict[str, Any]]: A list of findings from Claude's analysis, 
             each finding is a dictionary that may contain anomaly results or error information
         """
+        # If user_suspicions is not provided, use the one initialized in analyze_dataset
+        if user_suspicions is None and hasattr(self, "user_suspicions"):
+            user_suspicions = self.user_suspicions
         if not hasattr(self, "df"):
             return [{"error": "DataFrame not initialized in DataForensics object", "hint": "Make sure to set forensics.df before calling this method"}]
             
@@ -1556,7 +1660,47 @@ class DataForensics:
                 df_string = f"[Error rendering dataframe: {df_err}]"
             
             # Create prompt for Claude
-            prompt = f"""Analyze this dataset chunk for potential data manipulation or anomalies.
+            # Prepare section for user suspicions if provided
+            user_suspicion_section = ""
+            if user_suspicions and isinstance(user_suspicions, dict):
+                # Format the user suspicions in a helpful way, but emphasize being objective
+                user_suspicion_section = "\nUser has raised the following areas to explore (analyze these objectively, but do not let these suggestions bias your findings):\n"
+                
+                if "description" in user_suspicions and user_suspicions["description"]:
+                    user_suspicion_section += f"- Description: {user_suspicions['description']}\n"
+                
+                if "focus_columns" in user_suspicions and user_suspicions["focus_columns"]:
+                    focus_cols = ", ".join(user_suspicions["focus_columns"])
+                    user_suspicion_section += f"- Columns of interest: {focus_cols}\n"
+                    
+                if "potential_issues" in user_suspicions and user_suspicions["potential_issues"]:
+                    issues = ", ".join(user_suspicions["potential_issues"])
+                    user_suspicion_section += f"- Potential issues to check: {issues}\n"
+                    
+                if "treatment_columns" in user_suspicions and user_suspicions["treatment_columns"]:
+                    treatment_cols = ", ".join(user_suspicions["treatment_columns"])
+                    user_suspicion_section += f"- Potential treatment indicators: {treatment_cols}\n"
+                    
+                if "outcome_columns" in user_suspicions and user_suspicions["outcome_columns"]:
+                    outcome_cols = ", ".join(user_suspicions["outcome_columns"])
+                    user_suspicion_section += f"- Outcome variables: {outcome_cols}\n"
+                    
+                if "suspicious_rows" in user_suspicions and user_suspicions["suspicious_rows"]:
+                    # Format row ranges for readability
+                    rows = [str(r) for r in user_suspicions["suspicious_rows"]]
+                    if len(rows) > 10:
+                        rows_str = f"{', '.join(rows[:10])}... (and {len(rows)-10} more)"
+                    else:
+                        rows_str = ", ".join(rows)
+                    user_suspicion_section += f"- Specific rows to examine: {rows_str}\n"
+                
+                if "suspect_grouping" in user_suspicions and user_suspicions["suspect_grouping"]:
+                    user_suspicion_section += f"- Check for group-based patterns using: {user_suspicions['suspect_grouping']}\n"
+                    
+                # Add important note to avoid bias
+                user_suspicion_section += "\nIMPORTANT: While considering these areas, maintain objectivity and report what the data actually shows, not what is expected. Do not let these suggestions narrow your analysis or bias your findings. Thoroughly analyze all patterns in the data.\n"
+            
+            prompt = f"""Analyze this dataset chunk for potential data manipulation or anomalies.{user_suspicion_section}
 
 Dataset Information:
 - Rows: {len(chunk_df)} (from row {start_idx} to {end_idx - 1} in the original dataset)
@@ -1676,13 +1820,38 @@ Return your findings in the following JSON format (ONLY respond with valid JSON)
                         and "findings" in chunk_findings
                     ):
                         for finding in chunk_findings["findings"]:
+                            # Add chunk number reference
+                            finding["chunk"] = i + 1
+                            
+                            # Update row indices with offsets
                             if "row_indices" in finding:
-                                finding["row_indices"] = [
-                                    start_idx + idx for idx in finding["row_indices"]
-                                ]
-                                finding["chunk"] = (
-                                    i + 1
-                                )  # Store chunk number for reference
+                                try:
+                                    # Convert and normalize row_indices
+                                    # Could be a list of integers, a list of strings, or a single value
+                                    row_indices = finding["row_indices"]
+                                    
+                                    # If it's not a list, convert it to one
+                                    if not isinstance(row_indices, list):
+                                        row_indices = [row_indices]
+                                    
+                                    # Convert all indices to integers, then add offset
+                                    finding["row_indices"] = []
+                                    for idx in row_indices:
+                                        try:
+                                            if isinstance(idx, str):
+                                                # Try to convert string to int
+                                                idx = int(idx)
+                                            # Add the offset to translate to original dataset
+                                            finding["row_indices"].append(start_idx + idx)
+                                        except (ValueError, TypeError) as e:
+                                            # If a specific index can't be converted, log the error but continue processing
+                                            logger.warning(f"Could not process row index '{idx}': {e}")
+                                            
+                                except Exception as e:
+                                    # Log error but preserve the finding
+                                    logger.error(f"Error updating row indices: {e}")
+                                    # Add a diagnostic field
+                                    finding["row_indices_error"] = f"Original format could not be processed: {str(e)}"
 
                     # Safety check before adding to findings - we should already have a dict here, but double-check
                     if isinstance(chunk_findings, dict):

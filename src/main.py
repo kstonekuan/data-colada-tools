@@ -138,6 +138,7 @@ def detect_data_manipulation(
     output_dir: Optional[str] = None,
     paper_path: Optional[str] = None,
     use_claude_segmentation: bool = False,
+    user_suspicions: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """Detect potential data manipulation in research data.
 
@@ -147,6 +148,16 @@ def detect_data_manipulation(
         output_dir: Directory to save output files
         paper_path: Optional path to research paper PDF for context
         use_claude_segmentation: Whether to use Claude to analyze data in segments
+        user_suspicions: Optional dictionary with user-specified suspicions to guide analysis.
+            Format: {
+                "focus_columns": List[str],  # Columns to prioritize checking
+                "potential_issues": List[str],  # e.g., "sorting", "out_of_order", "duplicates"
+                "treatment_columns": List[str],  # Potential treatment indicator columns
+                "outcome_columns": List[str],  # Outcome variables to analyze
+                "suspicious_rows": List[int],  # Specific rows to check more carefully
+                "suspect_grouping": str,  # Potential column to check for group-based manipulation
+                "description": str  # Free-text description of suspicions
+            }
 
     Returns:
         Optional[str]: Report content as a string, or None/error message on failure
@@ -229,7 +240,20 @@ def detect_data_manipulation(
         logger.info(
             f"Checking sorting anomalies for ID column '{id_col}' within groups '{group_col}'"
         )
-        sorting_issues = forensics.check_sorting_anomalies(id_col, group_col)
+        
+        # Pass user suspicions if provided
+        if user_suspicions:
+            logger.info("Using user-provided suspicions to guide (but not bias) analysis")
+            sorting_issues = forensics.check_sorting_anomalies(
+                id_col, 
+                group_col, 
+                check_dependent_vars=True,
+                prioritize_columns=user_suspicions.get("focus_columns", []) + user_suspicions.get("outcome_columns", []),
+                prioritize_out_of_order=any(issue.lower() in ["out of order", "out-of-order", "out_of_order", "sorting"] 
+                                           for issue in user_suspicions.get("potential_issues", []))
+            )
+        else:
+            sorting_issues = forensics.check_sorting_anomalies(id_col, group_col)
 
         if sorting_issues:
             findings.append({"type": "sorting_anomaly", "details": sorting_issues})
@@ -285,7 +309,11 @@ def detect_data_manipulation(
         logger.info(
             f"Starting dataset segmentation and Claude-based anomaly detection on dataset with {dataset_info}..."
         )
-        claude_segment_findings = forensics.segment_and_analyze_with_claude(client)
+        # Pass user suspicions to Claude analysis if provided
+        if user_suspicions:
+            claude_segment_findings = forensics.segment_and_analyze_with_claude(client, user_suspicions=user_suspicions)
+        else:
+            claude_segment_findings = forensics.segment_and_analyze_with_claude(client)
 
         # Add a summary of Claude's segment analysis to findings
         if claude_segment_findings:

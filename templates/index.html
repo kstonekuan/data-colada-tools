@@ -84,6 +84,93 @@
                         </div>
                     </div>
                     
+                    <!-- User Suspicions Section -->
+                    <div class="mb-3 mt-4">
+                        <div class="card">
+                            <div class="card-header bg-light">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <h5 class="mb-0">
+                                        <i class="fas fa-magnifying-glass me-2"></i>Specific Areas to Investigate (Optional)
+                                    </h5>
+                                    <button class="btn btn-link collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#suspicionsCollapse" aria-expanded="false" aria-controls="suspicionsCollapse">
+                                        <i class="fas fa-chevron-down"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="collapse show" id="suspicionsCollapse">
+                                <div class="card-body">
+                                    <p class="text-muted">
+                                        <i class="fas fa-info-circle me-1"></i>If you have specific suspicions about the dataset, 
+                                        you can provide those details here to help guide (but not bias) the analysis.
+                                    </p>
+                                    
+                                    <div class="mb-3">
+                                        <label class="form-label">Description of your suspicions:</label>
+                                        <textarea class="form-control" name="description" rows="2" 
+                                            placeholder="E.g., I suspect that the data in the treatment group may have been manipulated to show a stronger effect..."></textarea>
+                                    </div>
+                                    
+                                    <div class="row">
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">Columns of interest:</label>
+                                            <input type="text" class="form-control" name="focus_columns" 
+                                                placeholder="E.g., score, response_count, output">
+                                            <small class="form-text text-muted">Separate multiple column names with commas</small>
+                                        </div>
+                                        
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">Potential issues to check:</label>
+                                            <select class="form-select" name="potential_issues" multiple>
+                                                <option value="sorting">Sorting/Order Manipulation</option>
+                                                <option value="out_of_order">Out-of-Order Observations</option>
+                                                <option value="duplicates">Duplicate Entries</option>
+                                                <option value="statistical">Statistical Anomalies</option>
+                                                <option value="fabrication">Data Fabrication</option>
+                                            </select>
+                                            <small class="form-text text-muted">Hold Ctrl/Cmd to select multiple</small>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="row">
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">Treatment indicator columns:</label>
+                                            <input type="text" class="form-control" name="treatment_columns" 
+                                                placeholder="E.g., condition, group, treatment">
+                                            <small class="form-text text-muted">Columns that indicate experimental groups</small>
+                                        </div>
+                                        
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">Outcome columns:</label>
+                                            <input type="text" class="form-control" name="outcome_columns" 
+                                                placeholder="E.g., score, result, dv">
+                                            <small class="form-text text-muted">Dependent variables/measures</small>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="row">
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">Suspicious rows (if known):</label>
+                                            <input type="text" class="form-control" name="suspicious_rows" 
+                                                placeholder="E.g., 12, 45-50, 78">
+                                            <small class="form-text text-muted">Individual rows or ranges</small>
+                                        </div>
+                                        
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">Suspect grouping column:</label>
+                                            <input type="text" class="form-control" name="suspect_grouping" 
+                                                placeholder="E.g., condition">
+                                            <small class="form-text text-muted">Column used to split data into groups</small>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="mt-2 alert alert-info">
+                                        <i class="fas fa-lightbulb me-2"></i>Note: These hints will be used to guide additional checks, but won't bias the core analysis or lead to overlooking other issues.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
                     <div class="text-center mt-4">
                         <button type="submit" class="btn btn-success btn-lg shadow-sm" id="analyze-btn" disabled>
                             <i class="fas fa-search me-2"></i>Analyze Data
