@@ -1,32 +1,37 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Data Forensics Tool</title>
+    <title>Hammurabi</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/font-awesome@6.0.0/css/all.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.7.0/styles/github.min.css">
     <style>
-        .container { 
-            max-width: 1200px; 
+        .container {
+            max-width: 1200px;
             margin-top: 30px;
         }
+
         .jumbotron {
             padding: 2rem;
             margin-bottom: 2rem;
             background-color: #f8f9fa;
             border-radius: 0.3rem;
         }
+
         .flash-messages {
             margin-bottom: 20px;
         }
+
         .footer {
             margin-top: 50px;
             padding: 20px 0;
             color: #6c757d;
             text-align: center;
         }
+
         .upload-container {
             border: 2px dashed #ccc;
             border-radius: 10px;
@@ -36,54 +41,67 @@
             margin: 30px 0;
             transition: all 0.3s;
         }
+
         .upload-container:hover {
             background-color: #e9ecef;
             transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.05);
         }
+
         .upload-container.border-info {
             border: 2px dashed #0dcaf0;
             background-color: rgba(13, 202, 240, 0.05);
         }
+
         .upload-container.border-info:hover {
             background-color: rgba(13, 202, 240, 0.1);
         }
+
         .upload-container.border-success {
             border: 2px dashed #198754;
             background-color: rgba(25, 135, 84, 0.05);
         }
+
         .upload-container.border-success:hover {
             background-color: rgba(25, 135, 84, 0.1);
         }
+
         .upload-icon {
             font-size: 48px;
             color: #6c757d;
             margin-bottom: 15px;
         }
+
         #file-name {
             margin-top: 10px;
             font-style: italic;
         }
+
         .results-section {
             margin-top: 30px;
         }
+
         .visualization-card {
             margin-bottom: 20px;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
             transition: transform 0.3s, box-shadow 0.3s;
         }
+
         .visualization-card:hover {
             transform: translateY(-5px);
-            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
         }
+
         .visualization-card img {
             max-width: 100%;
             cursor: pointer;
             transition: all 0.2s ease-in-out;
         }
+
         .visualization-card img:hover {
             transform: scale(1.02);
         }
+
         .viz-explanation {
             background-color: #f8f9fa;
             padding: 10px;
@@ -91,12 +109,14 @@
             border-left: 4px solid #0d6efd;
             font-size: 0.9rem;
         }
+
         .report-container {
             background-color: #f8f9fa;
             padding: 20px;
             border-radius: 5px;
             margin-top: 20px;
         }
+
         .markdown-body img {
             max-width: 70%;
             height: auto;
@@ -104,14 +124,15 @@
             margin: 20px auto;
             border: 1px solid #eaeaea;
             border-radius: 5px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
             cursor: pointer;
             transition: max-width 0.3s ease;
         }
-        
+
         .markdown-body img[data-expanded="true"] {
             max-width: 100%;
         }
+
         pre {
             background-color: #f8f9fa;
             padding: 15px;
@@ -119,42 +140,53 @@
             overflow-x: auto;
             border: 1px solid #eaeaea;
         }
+
         pre code {
             white-space: pre-wrap;
             word-break: break-word;
         }
+
         .json-key {
             color: #0d6efd;
         }
+
         .json-string {
             color: #198754;
         }
+
         .json-number {
             color: #fd7e14;
         }
+
         .json-boolean {
             color: #dc3545;
         }
+
         .json-null {
             color: #6c757d;
         }
+
         .json-collapsible {
             cursor: pointer;
         }
+
         .collapsible-content {
             display: none;
             margin-left: 20px;
         }
+
         .finding-card {
             margin-bottom: 20px;
             border-radius: 8px;
             overflow: hidden;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
         }
+
         .finding-card .card-header {
             font-weight: bold;
             background-color: #f1f7ff;
         }
+
         .loading {
             display: none;
             text-align: center;
@@ -162,25 +194,30 @@
             padding: 20px;
             background-color: #f8f9fa;
             border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
         }
+
         .spinner-border {
             width: 3rem;
             height: 3rem;
         }
+
         .analysis-steps {
             text-align: left;
             max-width: 600px;
             margin: 0 auto;
         }
+
         .step {
             opacity: 0.7;
             transition: opacity 0.3s, transform 0.3s;
         }
+
         .step.active {
             opacity: 1;
             transform: translateX(5px);
         }
+
         .step-badge {
             display: inline-flex;
             align-items: center;
@@ -189,16 +226,18 @@
             height: 28px;
             margin-right: 10px;
         }
+
         .step.active .step-badge {
             background-color: #0d6efd !important;
         }
-        
+
         /* Data Preview Table Styles */
         #data-preview-table {
             width: 100%;
             font-size: 0.9rem;
             border-collapse: collapse;
         }
+
         #data-preview-table th {
             position: sticky;
             top: 0;
@@ -208,100 +247,125 @@
             padding: 8px;
             border: 1px solid #dee2e6;
         }
+
         #data-preview-table td {
             padding: 8px;
             border: 1px solid #dee2e6;
         }
+
         .suspicious-row {
             animation: highlight-pulse 2s ease-in-out infinite;
         }
-        
+
         /* Highlighting styles for specific issues */
         .sorting-anomaly {
-            background-color: rgba(220, 53, 69, 0.1); /* Light red background */
+            background-color: rgba(220, 53, 69, 0.1);
+            /* Light red background */
         }
+
         .duplicate-id {
-            background-color: rgba(255, 193, 7, 0.1); /* Light yellow background */
+            background-color: rgba(255, 193, 7, 0.1);
+            /* Light yellow background */
         }
+
         .statistical-anomaly {
-            background-color: rgba(13, 202, 240, 0.1); /* Light blue background */
+            background-color: rgba(13, 202, 240, 0.1);
+            /* Light blue background */
         }
+
         .excel-movement {
-            background-color: rgba(108, 117, 125, 0.1); /* Light gray background */
+            background-color: rgba(108, 117, 125, 0.1);
+            /* Light gray background */
         }
-        
+
         /* Claude AI detected anomalies */
         .claude-anomaly {
-            background-color: rgba(111, 66, 193, 0.1); /* Light purple background */
+            background-color: rgba(111, 66, 193, 0.1);
+            /* Light purple background */
         }
-        
+
         /* Cell specific highlights - using borders */
         .cell-highlight-sorting {
-            border: 2px solid #dc3545 !important; /* Red border */
+            border: 2px solid #dc3545 !important;
+            /* Red border */
             font-weight: bold;
             position: relative;
         }
+
         .cell-highlight-duplicate {
-            border: 2px solid #ffc107 !important; /* Yellow border */
+            border: 2px solid #ffc107 !important;
+            /* Yellow border */
             font-weight: bold;
             position: relative;
         }
+
         .cell-highlight-outlier {
-            border: 2px solid #0dcaf0 !important; /* Blue border */
+            border: 2px solid #0dcaf0 !important;
+            /* Blue border */
             font-weight: bold;
             position: relative;
         }
+
         .cell-highlight-excel {
-            border: 2px solid #6c757d !important; /* Gray border */
+            border: 2px solid #6c757d !important;
+            /* Gray border */
             font-weight: bold;
             position: relative;
         }
-        
+
         /* Row highlights with borders */
         tr.sorting-anomaly td {
             border-top: 2px solid #dc3545 !important;
             border-bottom: 2px solid #dc3545 !important;
         }
+
         tr.sorting-anomaly td:first-child {
             border-left: 2px solid #dc3545 !important;
         }
+
         tr.sorting-anomaly td:last-child {
             border-right: 2px solid #dc3545 !important;
         }
-        
+
         tr.duplicate-id td {
             border-top: 2px solid #ffc107 !important;
             border-bottom: 2px solid #ffc107 !important;
         }
+
         tr.duplicate-id td:first-child {
             border-left: 2px solid #ffc107 !important;
         }
+
         tr.duplicate-id td:last-child {
             border-right: 2px solid #ffc107 !important;
         }
-        
+
         tr.statistical-anomaly td {
             border-top: 2px solid #0dcaf0 !important;
             border-bottom: 2px solid #0dcaf0 !important;
         }
+
         tr.statistical-anomaly td:first-child {
             border-left: 2px solid #0dcaf0 !important;
         }
+
         tr.statistical-anomaly td:last-child {
             border-right: 2px solid #0dcaf0 !important;
         }
-        
+
         tr.excel-movement td {
             border-top: 2px solid #6c757d !important;
             border-bottom: 2px solid #6c757d !important;
         }
+
         tr.excel-movement td:first-child {
             border-left: 2px solid #6c757d !important;
         }
+
         tr.excel-movement td:last-child {
             border-right: 2px solid #6c757d !important;
         }
-        
+
         /* Add indicator symbols to highlighted cells */
         .cell-highlight-sorting::before,
         .cell-highlight-duplicate::before,
@@ -313,33 +377,34 @@
             font-size: 10px;
             padding: 1px;
         }
-        
+
         .cell-highlight-sorting::before {
             content: "⚠";
             color: #dc3545;
         }
-        
+
         .cell-highlight-duplicate::before {
             content: "⊕";
             color: #ffc107;
         }
-        
+
         .cell-highlight-outlier::before {
             content: "⊙";
             color: #0dcaf0;
         }
-        
+
         .cell-highlight-excel::before {
             content: "⇄";
             color: #6c757d;
         }
-        
+
         .cell-highlight-claude {
-            border: 2px solid #6f42c1 !important; /* Purple border */
+            border: 2px solid #6f42c1 !important;
+            /* Purple border */
             font-weight: bold;
             position: relative;
         }
-        
+
         .cell-highlight-claude::before {
             content: "⨁";
             color: #6f42c1;
@@ -349,31 +414,33 @@
             font-size: 10px;
             padding: 1px;
         }
-        
+
         /* Claude AI row highlights with borders */
         tr.claude-anomaly td {
             border-top: 2px solid #6f42c1 !important;
             border-bottom: 2px solid #6f42c1 !important;
         }
+
         tr.claude-anomaly td:first-child {
             border-left: 2px solid #6f42c1 !important;
         }
+
         tr.claude-anomaly td:last-child {
             border-right: 2px solid #6f42c1 !important;
         }
-        
+
         /* Make suspicious rows stand out more */
         .suspicious-row {
             position: relative;
             z-index: 1;
         }
-        
+
         /* Full Dataset Table Styles */
         #raw-data-table {
             width: 100%;
             font-size: 0.9rem;
         }
-        
+
         #raw-data-table thead th {
             position: sticky;
             top: 0;
@@ -381,50 +448,55 @@
             background-color: #343a40;
             color: white;
         }
-        
+
         .raw-data-container {
             max-height: 80vh;
         }
-        
+
         #data-search {
             min-width: 250px;
         }
+
         /* Styles for user suspicions form */
-        .form-control:focus, .form-select:focus {
+        .form-control:focus,
+        .form-select:focus {
             border-color: #86b7fe;
             box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
         }
+
         [data-bs-toggle="collapse"] {
             cursor: pointer;
         }
+
         .card-header:hover {
             background-color: #f1f5f9;
         }
-        
+
         /* Make the multi-select easier to use */
         select[multiple] {
             height: auto;
             min-height: 100px;
         }
-        
+
         /* Add spacing between form elements */
         .form-label {
             margin-bottom: 0.5rem;
             font-weight: 600;
         }
-        
+
         .form-text {
             margin-top: 0.25rem;
             color: #6c757d;
         }
     </style>
 </head>
+
 <body>
     <nav class="navbar navbar-expand-md navbar-dark bg-dark">
         <div class="container">
             <a class="navbar-brand" href="/">
                 <i class="fas fa-search me-2"></i>
-                Data Forensics Tool
+                Hammurabi
             </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
@@ -447,14 +519,14 @@
     <div class="container">
         <div class="flash-messages">
             {% with messages = get_flashed_messages() %}
-                {% if messages %}
-                    {% for message in messages %}
-                        <div class="alert alert-warning alert-dismissible fade show">
-                            {{ message }}
-                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                        </div>
-                    {% endfor %}
-                {% endif %}
+            {% if messages %}
+            {% for message in messages %}
+            <div class="alert alert-warning alert-dismissible fade show">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            {% endfor %}
+            {% endif %}
             {% endwith %}
         </div>
 
@@ -463,7 +535,7 @@
 
     <footer class="footer">
         <div class="container">
-            <p>Data Forensics Tool &copy; 2025 - Detect potential manipulation in research data</p>
+            <p>Hammurabi &copy; 2025 - Building Confidence in Science</p>
         </div>
     </footer>
 
@@ -473,4 +545,5 @@
     <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.7.0/lib/languages/json.min.js"></script>
     {% block scripts %}{% endblock %}
 </body>
+
 </html>
