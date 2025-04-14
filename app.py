@@ -1547,6 +1547,28 @@ def view_results(analysis_id):
                         "<li><strong>Effect Size Analysis:</strong> Statistical analysis of treatment effects shows unusual patterns.</li>"
                     )
                     
+                if "with_without_comparison" in finding_types:
+                    comparison_findings = [f for f in json_findings if f["type"] == "with_without_comparison"]
+                    if comparison_findings and "details" in comparison_findings[0]:
+                        details = comparison_findings[0]["details"]
+                        suspicious_count = details.get("suspicious_rows_count", 0)
+                        
+                        # Check if any results show significant changes
+                        significant_changes = False
+                        for result in details.get("comparison_results", []):
+                            if result.get("significance_changed", False):
+                                significant_changes = True
+                                break
+                                
+                        if significant_changes:
+                            finding_explanations.append(
+                                f"<li><strong>Row Comparison Analysis:</strong> <span style='color: #dc3545;'>Removing {suspicious_count} suspicious rows changes statistical significance of results.</span></li>"
+                            )
+                        else:
+                            finding_explanations.append(
+                                f"<li><strong>Row Comparison Analysis:</strong> Comparison of results with and without {suspicious_count} suspicious rows.</li>"
+                            )
+                    
                 if "claude_detected_anomaly" in finding_types:
                     claude_findings = [f for f in json_findings if f["type"] == "claude_detected_anomaly"]
                     if claude_findings:

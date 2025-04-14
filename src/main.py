@@ -289,8 +289,21 @@ def detect_data_manipulation(
                         findings.append(
                             {"type": "effect_size_analysis", "details": effects}
                         )
+                    
+                    # Compare results with and without suspicious rows
+                    comparison_results = forensics.compare_with_without_suspicious_rows(
+                        suspicious_rows, group_col, column_categories["outcome_columns"]
+                    )
+                    
+                    if comparison_results and not (
+                        isinstance(comparison_results, dict) and "error" in comparison_results
+                    ):
+                        findings.append(
+                            {"type": "with_without_comparison", "details": comparison_results}
+                        )
+                        logger.info("Completed comparison of results with and without suspicious rows")
                 except Exception as e:
-                    logger.error(f"Error analyzing effect sizes: {e}")
+                    logger.error(f"Error analyzing effect sizes or comparing results: {e}")
                     # Don't add to findings if there was an error
 
     # Check for duplicate IDs
@@ -442,7 +455,8 @@ Based on these findings:
 2. Assess the likelihood that this data has been manipulated
 3. Explain what manipulation techniques may have been used
 4. Discuss the patterns in the suspicious observations - do they show a particularly strong effect?
-5. Provide a detailed explanation of why these patterns are unlikely to occur naturally
+5. If there are comparison results showing what happens when suspicious rows are removed, explain the significance of these changes
+6. Provide a detailed explanation of why these patterns are unlikely to occur naturally
 
 Reference: Research on data manipulation detection has identified several patterns that may indicate fabrication:
 
@@ -703,6 +717,18 @@ Please review the technical findings and visualizations to make your own assessm
                             logger.info(f"Created effect sizes plot: {effect_plot}")
                     except Exception as e:
                         logger.error(f"Error creating effect sizes plot: {e}")
+                        
+                    # Try to plot with/without comparison if we have that data
+                    try:
+                        comparison_findings = [f for f in findings if f.get("type") == "with_without_comparison"]
+                        if comparison_findings and "details" in comparison_findings[0]:
+                            comparison_results = comparison_findings[0]["details"]
+                            comparison_plot = visualizer.plot_with_without_comparison(comparison_results)
+                            if comparison_plot:
+                                plots.append({"type": "with_without_comparison", "path": comparison_plot})
+                                logger.info(f"Created with/without comparison plot: {comparison_plot}")
+                    except Exception as e:
+                        logger.error(f"Error creating with/without comparison plot: {e}")
         except Exception as e:
             logger.error(f"Error during visualization: {e}")
 

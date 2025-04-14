@@ -1954,6 +1954,220 @@ Return your findings in the following JSON format (ONLY respond with valid JSON)
 
         return claude_findings
 
+    def compare_with_without_suspicious_rows(self, suspicious_rows: List[int], 
+                                      group_column: Optional[str] = None,
+                                      outcome_columns: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Compare analysis results with and without suspicious rows to see how they impact the results.
+        
+        Args:
+            suspicious_rows: List of row indices considered suspicious
+            group_column: Name of the column containing group/treatment information
+            outcome_columns: Names of outcome/dependent variable columns to analyze
+            
+        Returns:
+            Dict[str, Any]: Dictionary containing comparison results
+        """
+        if not hasattr(self, "df") or self.df is None:
+            return {"error": "DataFrame not initialized or is None", 
+                    "hint": "Make sure to set forensics.df before calling this method"}
+            
+        if len(suspicious_rows) == 0:
+            return {"error": "No suspicious rows provided", 
+                   "hint": "Provide a list of row indices to compare"}
+        
+        if len(self.df) == 0:
+            return {"error": "DataFrame is empty (0 rows)", 
+                   "hint": "The dataset must contain at least one row of data"}
+        
+        # Create a DataFrame without the suspicious rows
+        df_without_suspicious = self.df.drop(suspicious_rows).reset_index(drop=True)
+        
+        # If no outcome columns are provided, try to automatically detect numeric columns
+        if outcome_columns is None:
+            # Exclude the group column from outcome columns if provided
+            numeric_cols = self.df.select_dtypes(include=["number"]).columns.tolist()
+            if group_column and group_column in numeric_cols:
+                numeric_cols.remove(group_column)
+            outcome_columns = numeric_cols[:5]  # Use first 5 numeric columns as default
+            
+        results = {
+            "suspicious_rows_count": len(suspicious_rows),
+            "dataset_size": len(self.df),
+            "dataset_size_without_suspicious": len(df_without_suspicious),
+            "outcome_columns": outcome_columns,
+            "comparison_results": []
+        }
+        
+        # If group column is provided, compare differences between groups
+        if group_column and group_column in self.df.columns:
+            # Check that the group column has at least 2 unique values
+            unique_groups = self.df[group_column].unique()
+            if len(unique_groups) >= 2:
+                results["group_column"] = group_column
+                results["groups"] = [str(g) for g in unique_groups]
+                
+                # For each outcome column, calculate statistics with and without suspicious rows
+                for col in outcome_columns:
+                    if col in self.df.columns and pd.api.types.is_numeric_dtype(self.df[col]):
+                        try:
+                            # Calculate statistics for full dataset
+                            full_stats = self._calculate_group_statistics(self.df, group_column, col)
+                            
+                            # Calculate statistics without suspicious rows
+                            clean_stats = self._calculate_group_statistics(df_without_suspicious, group_column, col)
+                            
+                            # Calculate effect sizes
+                            full_effect_size = self._calculate_effect_size(full_stats)
+                            clean_effect_size = self._calculate_effect_size(clean_stats)
+                            
+                            # Calculate percent change in effect size
+                            effect_size_change = 0
+                            if clean_effect_size != 0:
+                                effect_size_change = ((full_effect_size - clean_effect_size) / abs(clean_effect_size)) * 100
+                            
+                            # Hypothesis testing (t-test) with and without suspicious rows
+                            full_ttest = self._perform_ttest(self.df, group_column, col)
+                            clean_ttest = self._perform_ttest(df_without_suspicious, group_column, col)
+                            
+                            # Check if significance changes
+                            significance_changed = (full_ttest["p_value"] < 0.05 and clean_ttest["p_value"] >= 0.05) or \
+                                                  (full_ttest["p_value"] >= 0.05 and clean_ttest["p_value"] < 0.05)
+                            
+                            results["comparison_results"].append({
+                                "column": col,
+                                "with_suspicious": {
+                                    "group_stats": full_stats,
+                                    "effect_size": full_effect_size,
+                                    "ttest": full_ttest
+                                },
+                                "without_suspicious": {
+                                    "group_stats": clean_stats,
+                                    "effect_size": clean_effect_size,
+                                    "ttest": clean_ttest
+                                },
+                                "effect_size_change_percent": effect_size_change,
+                                "significance_changed": significance_changed,
+                                "significance_change_description": self._describe_significance_change(
+                                    full_ttest["p_value"], clean_ttest["p_value"])
+                            })
+                        except Exception as e:
+                            results["comparison_results"].append({
+                                "column": col,
+                                "error": str(e)
+                            })
+            else:
+                results["warning"] = f"Group column '{group_column}' has fewer than 2 unique values"
+        else:
+            # Without a group column, compare overall statistics
+            for col in outcome_columns:
+                if col in self.df.columns and pd.api.types.is_numeric_dtype(self.df[col]):
+                    try:
+                        # Calculate statistics for full dataset
+                        full_mean = float(self.df[col].mean())
+                        full_std = float(self.df[col].std())
+                        
+                        # Calculate statistics without suspicious rows
+                        clean_mean = float(df_without_suspicious[col].mean())
+                        clean_std = float(df_without_suspicious[col].std())
+                        
+                        # Calculate percent changes
+                        mean_change = 0
+                        if clean_mean != 0:
+                            mean_change = ((full_mean - clean_mean) / abs(clean_mean)) * 100
+                            
+                        std_change = 0
+                        if clean_std != 0:
+                            std_change = ((full_std - clean_std) / abs(clean_std)) * 100
+                        
+                        results["comparison_results"].append({
+                            "column": col,
+                            "with_suspicious": {
+                                "mean": full_mean,
+                                "std": full_std
+                            },
+                            "without_suspicious": {
+                                "mean": clean_mean,
+                                "std": clean_std
+                            },
+                            "mean_change_percent": mean_change,
+                            "std_change_percent": std_change
+                        })
+                    except Exception as e:
+                        results["comparison_results"].append({
+                            "column": col,
+                            "error": str(e)
+                        })
+        
+        return results
+    
+    def _calculate_group_statistics(self, df: pd.DataFrame, group_col: str, outcome_col: str) -> Dict[str, Dict[str, float]]:
+        """Calculate statistics for each group in the dataset."""
+        group_stats = {}
+        for group in df[group_col].unique():
+            group_data = df[df[group_col] == group][outcome_col]
+            group_stats[str(group)] = {
+                "count": len(group_data),
+                "mean": float(group_data.mean()) if len(group_data) > 0 else float('nan'),
+                "std": float(group_data.std()) if len(group_data) > 1 else float('nan'),
+                "min": float(group_data.min()) if len(group_data) > 0 else float('nan'),
+                "max": float(group_data.max()) if len(group_data) > 0 else float('nan')
+            }
+        return group_stats
+    
+    def _calculate_effect_size(self, group_stats: Dict[str, Dict[str, float]]) -> float:
+        """Calculate simple effect size (difference between max and min group means)."""
+        if len(group_stats) < 2:
+            return 0.0
+            
+        # Extract means, handling potential NaN values
+        means = [stats.get("mean", float('nan')) for stats in group_stats.values()]
+        valid_means = [m for m in means if not np.isnan(m)]
+        
+        if len(valid_means) < 2:
+            return 0.0
+            
+        return float(max(valid_means) - min(valid_means))
+    
+    def _perform_ttest(self, df: pd.DataFrame, group_col: str, outcome_col: str) -> Dict[str, float]:
+        """Perform t-test between the first two groups in the dataset."""
+        from scipy import stats
+        
+        groups = df[group_col].unique()
+        if len(groups) < 2:
+            return {"t_statistic": float('nan'), "p_value": float('nan')}
+            
+        # Use the first two groups for the t-test
+        group1_data = df[df[group_col] == groups[0]][outcome_col].dropna()
+        group2_data = df[df[group_col] == groups[1]][outcome_col].dropna()
+        
+        if len(group1_data) < 2 or len(group2_data) < 2:
+            return {"t_statistic": float('nan'), "p_value": float('nan')}
+            
+        try:
+            t_stat, p_val = stats.ttest_ind(group1_data, group2_data, equal_var=False)
+            return {"t_statistic": float(t_stat), "p_value": float(p_val)}
+        except Exception:
+            return {"t_statistic": float('nan'), "p_value": float('nan')}
+    
+    def _describe_significance_change(self, p_val_with: float, p_val_without: float) -> str:
+        """Create a description of how statistical significance changed."""
+        if np.isnan(p_val_with) or np.isnan(p_val_without):
+            return "Could not assess significance change due to insufficient data"
+            
+        if p_val_with < 0.05 and p_val_without >= 0.05:
+            return "Result is significant WITH suspicious rows, but NOT significant without them"
+        elif p_val_with >= 0.05 and p_val_without < 0.05:
+            return "Result is NOT significant WITH suspicious rows, but IS significant without them"
+        elif p_val_with < 0.05 and p_val_without < 0.05:
+            p_change = abs(p_val_with - p_val_without) / max(p_val_with, p_val_without) * 100
+            if p_change > 50:
+                return f"Result remains significant but p-value changes substantially ({p_change:.1f}% change)"
+            else:
+                return "Result remains significant with or without suspicious rows"
+        else:
+            return "Result remains non-significant with or without suspicious rows"
+            
     def generate_report(self) -> str:
         """Generate an HTML report of the findings.
         

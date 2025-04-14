@@ -255,6 +255,184 @@ class ForensicVisualizer:
             print(f"Error creating effect size plot: {str(e)}")
             return None
     
+    def plot_with_without_comparison(self, comparison_results):
+        """
+        Create a visualization showing how removing suspicious rows affects the results.
+        
+        Args:
+            comparison_results: The results from compare_with_without_suspicious_rows
+            
+        Returns:
+            Path to saved plot file
+        """
+        if not comparison_results or "comparison_results" not in comparison_results:
+            return None
+            
+        results = comparison_results["comparison_results"]
+        if not results:
+            return None
+            
+        # Extract columns with significance changes for highlighting
+        sig_change_cols = [r["column"] for r in results if r.get("significance_changed", False)]
+        
+        # Get group columns if available
+        has_groups = "group_column" in comparison_results and "groups" in comparison_results
+        
+        # Create figure based on number of results and whether we have groups
+        if has_groups:
+            fig, axes = plt.subplots(len(results), 2, figsize=(14, 5 * len(results)))
+            plt.suptitle("Impact of Suspicious Rows on Statistical Analysis", fontsize=16)
+            
+            # Handle single row case
+            if len(results) == 1:
+                axes = np.array([axes])
+                
+            for i, result in enumerate(results):
+                col_name = result["column"]
+                
+                # Check if this has group-based stats
+                if "with_suspicious" in result and "group_stats" in result["with_suspicious"]:
+                    # Get group stats
+                    with_stats = result["with_suspicious"]["group_stats"]
+                    without_stats = result["without_suspicious"]["group_stats"]
+                    groups = comparison_results["groups"]
+                    
+                    # Plot group means with suspicious rows
+                    with_means = [with_stats.get(g, {}).get("mean", 0) for g in groups]
+                    with_errors = [with_stats.get(g, {}).get("std", 0) for g in groups]
+                    without_means = [without_stats.get(g, {}).get("mean", 0) for g in groups]
+                    without_errors = [without_stats.get(g, {}).get("std", 0) for g in groups]
+                    
+                    # Left plot - means
+                    width = 0.35
+                    x = np.arange(len(groups))
+                    axes[i, 0].bar(x - width/2, with_means, width, label='With Suspicious Rows', 
+                                 color='#ff9999', yerr=with_errors, capsize=5)
+                    axes[i, 0].bar(x + width/2, without_means, width, label='Without Suspicious Rows', 
+                                 color='#66b3ff', yerr=without_errors, capsize=5)
+                    
+                    axes[i, 0].set_title(f"Mean Values for {col_name}")
+                    axes[i, 0].set_xticks(x)
+                    axes[i, 0].set_xticklabels(groups)
+                    axes[i, 0].set_ylabel("Mean Value")
+                    axes[i, 0].legend()
+                    
+                    # Highlight if significance changed
+                    if col_name in sig_change_cols:
+                        axes[i, 0].set_facecolor('#ffeeee')  # Light red background
+                        axes[i, 0].set_title(f"Mean Values for {col_name} (Significance Changed!)", color='red')
+                    
+                    # Right plot - effect size and p-value
+                    x_labels = ['Effect Size', 'p-value x 100']
+                    with_values = [result["with_suspicious"]["effect_size"], 
+                                  result["with_suspicious"]["ttest"]["p_value"] * 100]
+                    without_values = [result["without_suspicious"]["effect_size"], 
+                                     result["without_suspicious"]["ttest"]["p_value"] * 100]
+                    
+                    axes[i, 1].bar(x_labels, with_values, width=0.4, label='With Suspicious Rows', 
+                                 color='#ff9999', alpha=0.7)
+                    axes[i, 1].bar(x_labels, without_values, width=0.4, label='Without Suspicious Rows', 
+                                 color='#66b3ff', alpha=0.7)
+                    
+                    # Add significance threshold line for p-value
+                    axes[i, 1].axhline(y=5, color='r', linestyle='--', alpha=0.3, 
+                                     label='p=0.05 threshold')
+                    
+                    # Add text descriptions
+                    p_with = result["with_suspicious"]["ttest"]["p_value"]
+                    p_without = result["without_suspicious"]["ttest"]["p_value"]
+                    axes[i, 1].text(0, result["with_suspicious"]["effect_size"] + 0.1, 
+                                  f"{result['with_suspicious']['effect_size']:.2f}", ha='center')
+                    axes[i, 1].text(1, with_values[1] + 0.1, f"p={p_with:.3f}", ha='center')
+                    axes[i, 1].text(0, result["without_suspicious"]["effect_size"] - 0.3, 
+                                  f"{result['without_suspicious']['effect_size']:.2f}", ha='center')
+                    axes[i, 1].text(1, without_values[1] - 0.3, f"p={p_without:.3f}", ha='center')
+                    
+                    axes[i, 1].set_title(f"Statistical Measures for {col_name}")
+                    axes[i, 1].legend()
+                    
+                    # Add explanation text
+                    if "significance_change_description" in result:
+                        axes[i, 1].text(0.5, -0.2, result["significance_change_description"], 
+                                      ha='center', transform=axes[i, 1].transAxes, 
+                                      fontsize=10, fontweight='bold', 
+                                      color='red' if col_name in sig_change_cols else 'black')
+                    
+                    # Highlight if significance changed
+                    if col_name in sig_change_cols:
+                        axes[i, 1].set_facecolor('#ffeeee')  # Light red background
+                
+                else:
+                    # Simple mean comparison without groups
+                    x_labels = ['Mean', 'Std Dev']
+                    with_values = [result["with_suspicious"]["mean"], result["with_suspicious"]["std"]]
+                    without_values = [result["without_suspicious"]["mean"], result["without_suspicious"]["std"]]
+                    
+                    axes[i, 0].bar(x_labels, with_values, width=0.4, label='With Suspicious Rows', 
+                                 color='#ff9999', alpha=0.7)
+                    axes[i, 0].bar(x_labels, without_values, width=0.4, label='Without Suspicious Rows', 
+                                 color='#66b3ff', alpha=0.7)
+                    
+                    axes[i, 0].set_title(f"Statistics for {col_name}")
+                    axes[i, 0].legend()
+                    
+                    # Add text labels
+                    axes[i, 0].text(0, with_values[0] + 0.1, f"{with_values[0]:.2f}", ha='center')
+                    axes[i, 0].text(1, with_values[1] + 0.1, f"{with_values[1]:.2f}", ha='center')
+                    axes[i, 0].text(0, without_values[0] - 0.3, f"{without_values[0]:.2f}", ha='center')
+                    axes[i, 0].text(1, without_values[1] - 0.3, f"{without_values[1]:.2f}", ha='center')
+                    
+                    # Percent changes
+                    axes[i, 1].bar(['Mean Change %', 'Std Dev Change %'], 
+                                 [result["mean_change_percent"], result["std_change_percent"]], 
+                                 color=['#ff9999', '#66b3ff'])
+                    
+                    axes[i, 1].set_title(f"Percent Changes for {col_name}")
+                    axes[i, 1].text(0, result["mean_change_percent"] + 0.1, 
+                                  f"{result['mean_change_percent']:.1f}%", ha='center')
+                    axes[i, 1].text(1, result["std_change_percent"] + 0.1, 
+                                  f"{result['std_change_percent']:.1f}%", ha='center')
+        
+        else:
+            # Simpler plot for non-group data
+            fig, ax = plt.subplots(figsize=(12, 8))
+            plt.suptitle("Impact of Suspicious Rows on Dataset Statistics", fontsize=16)
+            
+            columns = [r["column"] for r in results]
+            mean_changes = [r.get("mean_change_percent", 0) for r in results]
+            std_changes = [r.get("std_change_percent", 0) for r in results]
+            
+            x = np.arange(len(columns))
+            width = 0.35
+            
+            ax.bar(x - width/2, mean_changes, width, label='Mean % Change', color='#ff9999')
+            ax.bar(x + width/2, std_changes, width, label='Std Dev % Change', color='#66b3ff')
+            
+            ax.set_ylabel('Percent Change')
+            ax.set_title('Percent Change When Suspicious Rows Removed')
+            ax.set_xticks(x)
+            ax.set_xticklabels(columns)
+            ax.legend()
+            
+            # Add value labels
+            for i, v in enumerate(mean_changes):
+                ax.text(i - width/2, v + 0.1, f"{v:.1f}%", ha='center')
+            for i, v in enumerate(std_changes):
+                ax.text(i + width/2, v + 0.1, f"{v:.1f}%", ha='center')
+        
+        plt.tight_layout()
+        
+        # Save the plot
+        if self.output_dir:
+            filename = os.path.join(self.output_dir, "with_without_comparison.png")
+            plt.savefig(filename, dpi=300, bbox_inches='tight')
+            return filename
+        else:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
+                plt.savefig(tmp.name, dpi=300, bbox_inches='tight')
+                plt.close()
+                return tmp.name
+    
     def plot_id_sequence(self, df, id_col, group_col, suspicious_rows=None):
         """
         Plot the sequence of IDs to visualize sorting anomalies.
