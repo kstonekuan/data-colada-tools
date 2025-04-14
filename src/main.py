@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import logging
 import os
+import traceback
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import pandas as pd
 from anthropic import Anthropic
@@ -9,9 +12,16 @@ from anthropic import Anthropic
 from src.data_forensics import DataForensics, ExcelForensics
 from src.visualize import ForensicVisualizer
 
+# Set up module logger
+logger = logging.getLogger(__name__)
 
-def load_config():
-    """Load configuration from config.json or environment variables."""
+
+def load_config() -> Dict[str, str]:
+    """Load configuration from config.json or environment variables.
+    
+    Returns:
+        Dict[str, str]: Configuration dictionary with API keys and other settings
+    """
     config_path = os.path.join(
         os.path.dirname(os.path.dirname(__file__)), "config.json"
     )
@@ -26,13 +36,23 @@ def load_config():
                 file_config = json.load(f)
                 config.update(file_config)
         except Exception as e:
-            print(f"Error loading config file: {e}")
+            logger.error(f"Error loading config file: {e}")
 
     return config
 
 
-def setup_client(api_key=None):
-    """Set up the Claude API client."""
+def setup_client(api_key: Optional[str] = None) -> Anthropic:
+    """Set up the Claude API client.
+    
+    Args:
+        api_key: Optional API key to override the one in config/environment
+        
+    Returns:
+        Anthropic: Configured Claude API client
+        
+    Raises:
+        ValueError: If no API key is provided in any form
+    """
     config = load_config()
 
     # Command line API key takes precedence
@@ -47,8 +67,16 @@ def setup_client(api_key=None):
     return Anthropic(api_key=config["api_key"])
 
 
-def identify_columns(client, df):
-    """Use Claude to identify and categorize columns in the dataset."""
+def identify_columns(client: Anthropic, df: pd.DataFrame) -> Dict[str, List[str]]:
+    """Use Claude to identify and categorize columns in the dataset.
+    
+    Args:
+        client: Claude API client
+        df: Pandas DataFrame to analyze
+        
+    Returns:
+        Dict[str, List[str]]: Dictionary mapping column categories to lists of column names
+    """
     columns = df.columns.tolist()
     column_types = [str(df[col].dtype) for col in columns]
     sample_data = df.head(5).to_string()
@@ -93,7 +121,7 @@ Be concise and only include the JSON in your response."""
         column_categories = json.loads(json_str)
         return column_categories
     except Exception as e:
-        print(f"Error parsing column categories: {e}")
+        logger.error(f"Error parsing column categories: {e}")
         # Fallback
         return {
             "id_columns": [],
@@ -105,8 +133,12 @@ Be concise and only include the JSON in your response."""
 
 
 def detect_data_manipulation(
-    client, data_path, output_dir=None, paper_path=None, use_claude_segmentation=False
-):
+    client: Anthropic, 
+    data_path: str, 
+    output_dir: Optional[str] = None, 
+    paper_path: Optional[str] = None, 
+    use_claude_segmentation: bool = False
+) -> Optional[str]:
     """Detect potential data manipulation in research data.
 
     Args:
@@ -115,10 +147,13 @@ def detect_data_manipulation(
         output_dir: Directory to save output files
         paper_path: Optional path to research paper PDF for context
         use_claude_segmentation: Whether to use Claude to analyze data in segments
+        
+    Returns:
+        Optional[str]: Report content as a string, or None/error message on failure
     """
-    print(f"Analyzing data file: {data_path}")
+    logger.info(f"Analyzing data file: {data_path}")
     if paper_path:
-        print(f"Using research paper for context: {paper_path}")
+        logger.info(f"Using research paper for context: {paper_path}")
 
     # Create output directory if needed
     if output_dir and not os.path.exists(output_dir):
@@ -156,7 +191,7 @@ def detect_data_manipulation(
                 try:
                     df, meta = pyreadstat.read_sav(data_path, encoding=encoding)
                     read_success = True
-                    print(
+                    logger.info(
                         f"Successfully read SPSS file with encoding: {encoding if encoding else 'auto-detected'}"
                     )
                     break
@@ -166,19 +201,22 @@ def detect_data_manipulation(
 
             if not read_success:
                 error_msg = f"Could not read SPSS file with any encoding: {last_error}"
-                print(error_msg)
+                logger.error(error_msg)
                 return error_msg
         except ImportError:
-            print(
+            logger.error(
                 "The pyreadstat package is required to read SPSS files. Please install it with 'pip install pyreadstat'"
             )
             return "The pyreadstat package is required to read SPSS files. Please install it with 'pip install pyreadstat'"
     else:
-        print(f"Unsupported file format: {file_ext}")
+        logger.error(f"Unsupported file format: {file_ext}")
         return
 
     # Use Claude to identify column categories
     column_categories = identify_columns(client, df)
+    
+    # Always set the DataFrame on the forensics object regardless of whether we have ID/group columns
+    forensics.df = df
 
     # Basic analysis with DataForensics
     findings = []
@@ -188,15 +226,14 @@ def detect_data_manipulation(
         id_col = column_categories["id_columns"][0]  # Use first ID column
         group_col = column_categories["group_columns"][0]  # Use first group column
 
-        print(
+        logger.info(
             f"Checking sorting anomalies for ID column '{id_col}' within groups '{group_col}'"
         )
-        forensics.df = df
         sorting_issues = forensics.check_sorting_anomalies(id_col, group_col)
 
         if sorting_issues:
             findings.append({"type": "sorting_anomaly", "details": sorting_issues})
-            print(f"Found {len(sorting_issues)} sorting anomalies")
+            logger.info(f"Found {len(sorting_issues)} sorting anomalies")
 
             # If Excel file, check calc chain for evidence of row movement
             if file_ext == ".xlsx":
@@ -210,7 +247,7 @@ def detect_data_manipulation(
                         findings.append(
                             {"type": "excel_row_movement", "details": movement_evidence}
                         )
-                        print("Found evidence of row movement in Excel file")
+                        logger.info("Found evidence of row movement in Excel file")
 
             # Check if suspicious observations show strong effect in the expected direction
             if column_categories["outcome_columns"]:
@@ -229,7 +266,7 @@ def detect_data_manipulation(
                             {"type": "effect_size_analysis", "details": effects}
                         )
                 except Exception as e:
-                    print(f"Error analyzing effect sizes: {e}")
+                    logger.error(f"Error analyzing effect sizes: {e}")
                     # Don't add to findings if there was an error
 
     # Check for duplicate IDs
@@ -239,27 +276,30 @@ def detect_data_manipulation(
 
         if duplicate_ids:
             findings.append({"type": "duplicate_ids", "details": duplicate_ids})
-            print(f"Found {len(duplicate_ids)} duplicate IDs")
+            logger.info(f"Found {len(duplicate_ids)} duplicate IDs")
 
     # Use Claude to analyze data in segments if requested
     claude_segment_findings = []
     if use_claude_segmentation:
-        print("Starting dataset segmentation and Claude-based anomaly detection...")
+        dataset_info = f"{len(df)} rows, {len(df.columns)} columns"
+        logger.info(
+            f"Starting dataset segmentation and Claude-based anomaly detection on dataset with {dataset_info}..."
+        )
         claude_segment_findings = forensics.segment_and_analyze_with_claude(client)
 
         # Add a summary of Claude's segment analysis to findings
         if claude_segment_findings:
             # Filter out non-dictionary items and count high-confidence anomalies
-            valid_findings = [f for f in claude_segment_findings if isinstance(f, dict)]
-            anomaly_chunks = [
+            valid_findings: List[Dict[str, Any]] = [f for f in claude_segment_findings if isinstance(f, dict)]
+            anomaly_chunks: List[Dict[str, Any]] = [
                 f
                 for f in valid_findings
                 if f.get("anomalies_detected", False) and f.get("confidence", 0) >= 7
             ]
 
             if anomaly_chunks:
-                total_anomalies = 0
-                anomaly_types = set()
+                total_anomalies: int = 0
+                anomaly_types: Set[str] = set()
                 for chunk in anomaly_chunks:
                     if "findings" in chunk:
                         total_anomalies += len(chunk["findings"])
@@ -267,7 +307,7 @@ def detect_data_manipulation(
                             if "type" in finding:
                                 anomaly_types.add(finding["type"])
 
-                print(
+                logger.info(
                     f"Claude detected {total_anomalies} high-confidence anomalies across {len(anomaly_chunks)} chunks"
                 )
                 findings.append(
@@ -325,7 +365,7 @@ Your extraction should ONLY contain original text directly quoted from the paper
 """
                     try:
                         # Call Claude to extract the key information
-                        print(
+                        logger.info(
                             "Calling Claude to extract key sections of the research paper..."
                         )
                         extraction_response = client.messages.create(
@@ -344,19 +384,19 @@ I've also extracted the key sections from the research paper that provide contex
 Research Paper Excerpts (Original Text):
 {paper_extracts}
 """
-                            print(
+                            logger.info(
                                 "Added extracted paper sections to prompt (original text preserved)"
                             )
                     except Exception as e:
-                        print(f"Error in Claude summary extraction: {e}")
+                        logger.error(f"Error in Claude summary extraction: {e}")
                         # Fallback to original method if Claude call fails
                         paper_excerpt = f"Research Paper (original text excerpt):\n{paper_text[:5000]}"
                         paper_context = f"I've also extracted text from the research paper that might provide context about the data:\n\n{paper_excerpt}"
-                        print(
+                        logger.info(
                             "Added raw research paper context to prompt (fallback method)"
                         )
         except Exception as e:
-            print(f"Error extracting text from PDF: {e}")
+            logger.error(f"Error extracting text from PDF: {e}")
             # Continue without paper context if there's an error
 
     prompt = f"""I need you to analyze potential data manipulation in a research dataset.
@@ -395,7 +435,7 @@ If I provided a research paper, use its context to guide your analysis about wha
 
 Your assessment:"""
 
-    print("Generating forensic analysis with Claude...")
+    logger.info("Generating forensic analysis with Claude...")
     try:
         response = client.messages.create(
             model="claude-3-7-sonnet-latest",
@@ -411,9 +451,8 @@ Your assessment:"""
 
         # Create a highly visible error message in the server logs
         error_msg = f"CRITICAL: Claude API call failed: {str(e)}"
-        error_box = "#" * len(error_msg)
-        print(f"\n{error_box}\n{error_msg}\n{error_box}\n")
-        print(f"ERROR DETAILS:\n{error_details}")
+        logger.critical(error_msg)
+        logger.error(f"Error details: {error_details}")
 
         # Provide a fallback analysis
         analysis = f"""
@@ -451,11 +490,11 @@ Please review the technical findings and visualizations to make your own assessm
         segment_report += "Claude analyzed the dataset in segments to identify potential anomalies.\n\n"
 
         # Sanitize the findings to ensure we only have dictionaries
-        sanitized_findings = []
+        sanitized_findings: List[Dict[str, Any]] = []
         for f in claude_segment_findings:
             if not isinstance(f, dict):
-                print(
-                    f"WARNING: Found non-dictionary item in claude_segment_findings: {type(f)}: {str(f)[:100]}"
+                logger.warning(
+                    f"Found non-dictionary item in claude_segment_findings: {type(f)}: {f}"
                 )
                 # Convert to error dictionary
                 sanitized_findings.append(
@@ -470,22 +509,44 @@ Please review the technical findings and visualizations to make your own assessm
                 sanitized_findings.append(f)
 
         # Check for any error results
-        error_chunks = [
+        error_chunks: List[Dict[str, Any]] = [
             f for f in sanitized_findings if isinstance(f, dict) and "error" in f
         ]
         if error_chunks:
             segment_report += f"⚠️ **Note:** {len(error_chunks)} of {len(sanitized_findings)} chunks had errors during processing.\n\n"
+            
+            # Add error details to help with debugging
+            segment_report += "**Error Details:**\n\n"
+            for i, error_chunk in enumerate(error_chunks):
+                error_message = error_chunk.get("error", "Unknown error")
+                chunk_info = f"chunk {error_chunk.get('chunk', i+1)}"
+                rows_info = error_chunk.get("rows", "unknown rows")
+                
+                segment_report += f"- Error in {chunk_info} ({rows_info}): {error_message}\n"
+                
+                # Include raw data snippet if available, for better debugging
+                if "raw_data" in error_chunk and error_chunk["raw_data"]:
+                    raw_data = error_chunk["raw_data"]
+                    if len(raw_data) > 100:
+                        raw_data = raw_data[:100] + "..."
+                    segment_report += f"  Raw data: `{raw_data}`\n"
+                
+                # Include traceback if available
+                if "traceback" in error_chunk and error_chunk["traceback"]:
+                    segment_report += f"  Details: ```\n{error_chunk['traceback']}\n```\n"
+            
+            segment_report += "\n"
 
         # Add summary (filter out error chunks for anomaly detection)
-        valid_chunks = [
+        valid_chunks: List[Dict[str, Any]] = [
             f for f in sanitized_findings if isinstance(f, dict) and "error" not in f
         ]
-        anomaly_chunks = [
+        anomaly_chunks: List[Dict[str, Any]] = [
             f
             for f in valid_chunks
             if isinstance(f, dict) and f.get("anomalies_detected", False)
         ]
-        high_confidence_chunks = [
+        high_confidence_chunks: List[Dict[str, Any]] = [
             f
             for f in anomaly_chunks
             if isinstance(f, dict) and f.get("confidence", 0) >= 7
@@ -546,17 +607,17 @@ Please review the technical findings and visualizations to make your own assessm
         report += segment_report
 
     # Create visualizations if we have suspicious rows
-    plots = []
+    plots: List[Dict[str, str]] = []
     if findings and output_dir:
         try:
-            visualizer = ForensicVisualizer(output_dir)
+            visualizer: ForensicVisualizer = ForensicVisualizer(output_dir)
 
             # Extract suspicious rows from findings
-            suspicious_rows = []
+            suspicious_rows: List[int] = []
             for finding in findings:
                 if finding["type"] == "sorting_anomaly":
                     suspicious_rows.extend(
-                        [issue["row_index"] for issue in finding["details"]]
+                        [int(issue["row_index"]) for issue in finding["details"]]
                     )
 
             if (
@@ -564,8 +625,8 @@ Please review the technical findings and visualizations to make your own assessm
                 and column_categories["id_columns"]
                 and column_categories["group_columns"]
             ):
-                id_col = column_categories["id_columns"][0]
-                group_col = column_categories["group_columns"][0]
+                id_col: str = column_categories["id_columns"][0]
+                group_col: str = column_categories["group_columns"][0]
 
                 try:
                     # Plot ID sequence
@@ -574,9 +635,9 @@ Please review the technical findings and visualizations to make your own assessm
                     )
                     if id_plot:
                         plots.append({"type": "id_sequence", "path": id_plot})
-                        print(f"Created ID sequence plot: {id_plot}")
+                        logger.info(f"Created ID sequence plot: {id_plot}")
                 except Exception as e:
-                    print(f"Error creating ID sequence plot: {e}")
+                    logger.error(f"Error creating ID sequence plot: {e}")
 
                 # Plot suspicious vs normal observations for outcome variables
                 if column_categories["outcome_columns"]:
@@ -591,9 +652,11 @@ Please review the technical findings and visualizations to make your own assessm
                             plots.append(
                                 {"type": "suspicious_vs_normal", "path": outcome_plot}
                             )
-                            print(f"Created suspicious vs normal plot: {outcome_plot}")
+                            logger.info(
+                                f"Created suspicious vs normal plot: {outcome_plot}"
+                            )
                     except Exception as e:
-                        print(f"Error creating suspicious vs normal plot: {e}")
+                        logger.error(f"Error creating suspicious vs normal plot: {e}")
 
                     try:
                         # Plot effect sizes
@@ -605,11 +668,11 @@ Please review the technical findings and visualizations to make your own assessm
                         )
                         if effect_plot:
                             plots.append({"type": "effect_sizes", "path": effect_plot})
-                            print(f"Created effect sizes plot: {effect_plot}")
+                            logger.info(f"Created effect sizes plot: {effect_plot}")
                     except Exception as e:
-                        print(f"Error creating effect sizes plot: {e}")
+                        logger.error(f"Error creating effect sizes plot: {e}")
         except Exception as e:
-            print(f"Error during visualization: {e}")
+            logger.error(f"Error during visualization: {e}")
 
     # Update the report with plot information
     if plots:
@@ -632,27 +695,34 @@ Please review the technical findings and visualizations to make your own assessm
         )
         with open(report_path, "w") as f:
             f.write(report)
-        print(f"Report saved to {report_path}")
+        logger.info(f"Report saved to {report_path}")
 
     return report
 
 
-def main():
-    parser = argparse.ArgumentParser(
+def main() -> int:
+    """Main entry point for the application.
+    
+    Returns:
+        int: Exit code (0 for success, 1 for error)
+    """
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(
         description="Data Manipulation Detection with Claude"
     )
     parser.add_argument("--api-key", help="Claude API key")
     parser.add_argument("--data", required=True, help="Path to input data file")
     parser.add_argument("--output", help="Directory to save output reports")
 
-    args = parser.parse_args()
+    args: argparse.Namespace = parser.parse_args()
 
     try:
-        client = setup_client(args.api_key)
-        report = detect_data_manipulation(client, args.data, args.output)
-        print("\nAnalysis complete!")
+        client: Anthropic = setup_client(args.api_key)
+        report: Optional[str] = detect_data_manipulation(client, args.data, args.output)
+        logger.info("Analysis complete!")
+        return 0
     except Exception as e:
-        print(f"Error during analysis: {e}")
+        logger.error(f"Error during analysis: {e}")
+        return 1
 
 
 if __name__ == "__main__":

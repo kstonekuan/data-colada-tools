@@ -1,28 +1,47 @@
 #!/usr/bin/env python3
 import json
+import logging
 import os
 import re
 import shutil
 import tempfile
+import traceback
 import xml.etree.ElementTree as ET
 import zipfile
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from anthropic import Anthropic
+
+# Set up module logger
+logger = logging.getLogger(__name__)
 
 
 class DataForensics:
     """Class for detecting potential data manipulation in research datasets."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the DataForensics object."""
-        self.findings = []
-        self.plots = []
+        self.findings: List[Dict[str, Any]] = []
+        self.plots: List[Dict[str, Any]] = []
+        self.df: Optional[pd.DataFrame] = None
+        self.excel_metadata: Optional[Dict[str, List[Dict[str, Any]]]] = None
 
-    def analyze_dataset(self, filepath, id_col=None, sort_cols=None):
-        """Analyze a dataset for potential manipulation."""
+    def analyze_dataset(self, filepath: str, id_col: Optional[str] = None, 
+                      sort_cols: Optional[Union[str, List[str]]] = None) -> List[Dict[str, Any]]:
+        """Analyze a dataset for potential manipulation.
+        
+        Args:
+            filepath: Path to the dataset file
+            id_col: Column name for IDs
+            sort_cols: Column name(s) for sorting/grouping
+            
+        Returns:
+            List of findings as dictionaries
+        """
         self.findings = []
         self.plots = []
 
@@ -101,8 +120,16 @@ class DataForensics:
 
         return self.findings
 
-    def check_sorting_anomalies(self, id_col, sort_cols):
-        """Check for anomalies in sorting order that might indicate manipulation."""
+    def check_sorting_anomalies(self, id_col: str, sort_cols: Union[str, List[str]]) -> List[Dict[str, Any]]:
+        """Check for anomalies in sorting order that might indicate manipulation.
+        
+        Args:
+            id_col: Column name for IDs
+            sort_cols: Column name(s) for sorting/grouping
+            
+        Returns:
+            List of sorting anomalies found
+        """
         anomalies = []
 
         # For each sorting level
@@ -143,8 +170,15 @@ class DataForensics:
 
         return anomalies
 
-    def check_duplicate_ids(self, id_col):
-        """Check for duplicate ID values that might indicate manipulation."""
+    def check_duplicate_ids(self, id_col: str) -> List[Dict[str, Any]]:
+        """Check for duplicate ID values that might indicate manipulation.
+        
+        Args:
+            id_col: Column name for IDs
+            
+        Returns:
+            List of duplicate ID findings
+        """
         id_counts = self.df[id_col].value_counts()
         duplicates = id_counts[id_counts > 1].index.tolist()
 
@@ -163,8 +197,15 @@ class DataForensics:
 
         return duplicate_details
 
-    def extract_excel_metadata(self, excel_file):
-        """Extract metadata from Excel file including calcChain information."""
+    def extract_excel_metadata(self, excel_file: str) -> Dict[str, List[Dict[str, Any]]]:
+        """Extract metadata from Excel file including calcChain information.
+        
+        Args:
+            excel_file: Path to the Excel file
+            
+        Returns:
+            Dict[str, List[Dict[str, Any]]]: Metadata extracted from the Excel file
+        """
         metadata = {"calc_chain": []}
 
         # Create a temporary directory
@@ -194,8 +235,15 @@ class DataForensics:
 
         return metadata
 
-    def analyze_calc_chain(self, suspect_rows):
-        """Analyze the calcChain to detect row movement."""
+    def analyze_calc_chain(self, suspect_rows: List[int]) -> List[Dict[str, Any]]:
+        """Analyze the calcChain to detect row movement.
+        
+        Args:
+            suspect_rows: List of row indices to check for movement evidence
+            
+        Returns:
+            List[Dict[str, Any]]: Findings about row movements
+        """
         if not hasattr(self, "excel_metadata") or not self.excel_metadata.get(
             "calc_chain"
         ):
@@ -244,8 +292,11 @@ class DataForensics:
 
         return findings
 
-    def analyze_statistical_anomalies(self):
-        """Look for statistical anomalies in the data."""
+    def analyze_statistical_anomalies(self) -> None:
+        """Look for statistical anomalies in the data.
+        
+        Identifies outliers in numeric columns and adds findings to self.findings.
+        """
         # If there are fewer than 5 columns, skip this analysis
         if len(self.df.columns) < 5:
             return
@@ -287,8 +338,18 @@ class DataForensics:
                     plt.close()
                     self.plots.append({"column": col, "plot_path": tmp.name})
 
-    def analyze_suspicious_observations(self, suspicious_rows, group_col, outcome_vars):
-        """Analyze whether suspicious observations show a strong effect in the expected direction."""
+    def analyze_suspicious_observations(self, suspicious_rows: List[int], group_col: str, 
+                                  outcome_vars: List[str]) -> Dict[str, Any]:
+        """Analyze whether suspicious observations show a strong effect in the expected direction.
+        
+        Args:
+            suspicious_rows: List of row indices considered suspicious
+            group_col: Column name for grouping/conditions
+            outcome_vars: List of outcome variable column names
+            
+        Returns:
+            Dict[str, Any]: Analysis results for each outcome variable
+        """
         results = {}
 
         # Get the groups
@@ -385,7 +446,7 @@ class DataForensics:
 
         return results
 
-    def detect_fabrication_patterns(self):
+    def detect_fabrication_patterns(self) -> None:
         """
         Detect possible data fabrication by looking for unusual patterns in the data.
 
@@ -395,6 +456,8 @@ class DataForensics:
         - Lack of expected natural distributions
         - Strong linear progressions
         - Idiosyncratic response clusters (e.g., identical wrong answers)
+        
+        Adds findings to self.findings if fabrication patterns are detected.
         """
         # Analyze both numeric and categorical columns
         numeric_cols = self.df.select_dtypes(include=["number"]).columns.tolist()
@@ -497,7 +560,7 @@ class DataForensics:
                                 }
                             )
             except Exception as e:
-                print(f"Error analyzing digit patterns in {col}: {e}")
+                logger.error(f"Error analyzing digit patterns in {col}: {e}")
                 continue
 
         # Check for unusual linear progressions
@@ -525,7 +588,7 @@ class DataForensics:
                             }
                         )
             except Exception as e:
-                print(f"Error analyzing sequences in {col}: {e}")
+                logger.error(f"Error analyzing sequences in {col}: {e}")
                 continue
 
         # Check for idiosyncratic response clusters in categorical columns
@@ -605,7 +668,7 @@ class DataForensics:
                         }
                     )
             except Exception as e:
-                print(f"Error analyzing categorical patterns in {col}: {e}")
+                logger.error(f"Error analyzing categorical patterns in {col}: {e}")
                 continue
 
         if fabrication_findings:
@@ -616,8 +679,12 @@ class DataForensics:
             # Create visualization
             self.create_digit_distribution_plot(analyzed_numeric_cols)
 
-    def create_digit_distribution_plot(self, columns):
-        """Create plot showing distribution of last digits for each column."""
+    def create_digit_distribution_plot(self, columns: List[str]) -> None:
+        """Create plot showing distribution of last digits for each column.
+        
+        Args:
+            columns: List of column names to analyze for digit distribution
+        """
         if not columns:
             return
 
@@ -675,7 +742,7 @@ class DataForensics:
                     axes[i].legend()
 
             except Exception as e:
-                print(f"Error creating plot for {col}: {e}")
+                logger.error(f"Error creating plot for {col}: {e}")
                 axes[i].text(
                     0.5,
                     0.5,
@@ -693,12 +760,14 @@ class DataForensics:
             plt.close()
             self.plots.append({"column": "last_digits", "plot_path": tmp.name})
 
-    def analyze_terminal_digits(self):
+    def analyze_terminal_digits(self) -> None:
         """
         Analyze terminal (last) digits of numeric values for anomalies.
 
         In naturally occurring numerical data, terminal digits should follow a uniform distribution.
         Data manipulation or fabrication often results in non-uniform distribution of terminal digits.
+        
+        Adds findings to self.findings if anomalies are detected.
         """
         # Focus on numeric columns
         numeric_cols = self.df.select_dtypes(include=["number"]).columns.tolist()
@@ -776,7 +845,7 @@ class DataForensics:
                         }
                     )
             except Exception as e:
-                print(f"Error analyzing terminal digits for {col}: {e}")
+                logger.error(f"Error analyzing terminal digits for {col}: {e}")
                 continue
 
         if anomalies:
@@ -787,8 +856,12 @@ class DataForensics:
             # Create visualization
             self.create_terminal_digit_plot(anomalies)
 
-    def create_terminal_digit_plot(self, anomalies):
-        """Create visualization of anomalous terminal digit distributions."""
+    def create_terminal_digit_plot(self, anomalies: List[Dict[str, Any]]) -> None:
+        """Create visualization of anomalous terminal digit distributions.
+        
+        Args:
+            anomalies: List of anomaly dictionaries containing terminal digit findings
+        """
         if not anomalies:
             return
 
@@ -853,7 +926,7 @@ class DataForensics:
                 axes[i].legend()
 
             except Exception as e:
-                print(f"Error creating terminal digit plot: {e}")
+                logger.error(f"Error creating terminal digit plot: {e}")
                 axes[i].text(
                     0.5,
                     0.5,
@@ -871,12 +944,17 @@ class DataForensics:
             plt.close()
             self.plots.append({"column": "terminal_digits", "plot_path": tmp.name})
 
-    def analyze_variance_anomalies(self, group_col):
+    def analyze_variance_anomalies(self, group_col: str) -> None:
         """
         Analyze whether variance is unusually low in some groups compared to others.
 
         This can indicate data manipulation where some groups have had their
         values adjusted to produce a desired effect.
+        
+        Args:
+            group_col: Column name for grouping/condition variable
+            
+        Adds findings to self.findings if anomalies are detected.
         """
         # Check if group column exists
         if group_col not in self.df.columns:
@@ -946,7 +1024,7 @@ class DataForensics:
                         }
                     )
             except Exception as e:
-                print(f"Error analyzing variance in {col}: {e}")
+                logger.error(f"Error analyzing variance in {col}: {e}")
                 continue
 
         if anomalies:
@@ -955,8 +1033,13 @@ class DataForensics:
             # Create visualization
             self.create_variance_comparison_plot(anomalies, group_col)
 
-    def create_variance_comparison_plot(self, anomalies, group_col):
-        """Create plots comparing distributions across groups with variance anomalies."""
+    def create_variance_comparison_plot(self, anomalies: List[Dict[str, Any]], group_col: str) -> None:
+        """Create plots comparing distributions across groups with variance anomalies.
+        
+        Args:
+            anomalies: List of anomaly dictionaries containing variance findings
+            group_col: Column name for grouping variable
+        """
         if not anomalies:
             return
 
@@ -997,14 +1080,16 @@ class DataForensics:
                     )
 
             except Exception as e:
-                print(f"Error creating variance comparison plot for {col}: {e}")
+                logger.error(f"Error creating variance comparison plot for {col}: {e}")
 
-    def detect_inlier_patterns(self):
+    def detect_inlier_patterns(self) -> None:
         """
         Detect whether there are too many values clustered near the means.
 
         In fabricated data, values are often created to be close to desired
         means, resulting in an unusual lack of outliers and too many "inliers".
+        
+        Adds findings to self.findings if anomalies are detected.
         """
         # Get numeric columns for analysis
         numeric_cols = self.df.select_dtypes(include=["number"]).columns.tolist()
@@ -1059,7 +1144,7 @@ class DataForensics:
                         }
                     )
             except Exception as e:
-                print(f"Error analyzing inlier patterns in {col}: {e}")
+                logger.error(f"Error analyzing inlier patterns in {col}: {e}")
                 continue
 
         if anomalies:
@@ -1068,8 +1153,12 @@ class DataForensics:
             # Create visualization
             self.create_inlier_distribution_plot(anomalies)
 
-    def create_inlier_distribution_plot(self, anomalies):
-        """Create distribution plots for columns with inlier anomalies."""
+    def create_inlier_distribution_plot(self, anomalies: List[Dict[str, Any]]) -> None:
+        """Create distribution plots for columns with inlier anomalies.
+        
+        Args:
+            anomalies: List of anomaly dictionaries containing inlier pattern findings
+        """
         if not anomalies:
             return
 
@@ -1122,7 +1211,7 @@ class DataForensics:
                 axes[i].legend()
 
             except Exception as e:
-                print(f"Error creating inlier distribution plot for {col}: {e}")
+                logger.error(f"Error creating inlier distribution plot for {col}: {e}")
                 axes[i].text(
                     0.5,
                     0.5,
@@ -1140,7 +1229,7 @@ class DataForensics:
             plt.close()
             self.plots.append({"column": "inlier_distribution", "plot_path": tmp.name})
 
-    def segment_and_analyze_with_claude(self, client, max_rows_per_chunk=300):
+    def segment_and_analyze_with_claude(self, client: Anthropic, max_rows_per_chunk: int = 300) -> List[Dict[str, Any]]:
         """
         Segment dataset into manageable chunks and use Claude to detect anomalies in each chunk.
 
@@ -1149,20 +1238,29 @@ class DataForensics:
             max_rows_per_chunk: Maximum number of rows per chunk
 
         Returns:
-            A list of findings from Claude's analysis
+            List[Dict[str, Any]]: A list of findings from Claude's analysis, 
+            each finding is a dictionary that may contain anomaly results or error information
         """
-        if not hasattr(self, "df") or self.df is None or len(self.df) == 0:
-            return {"error": "No dataset loaded for analysis"}
+        if not hasattr(self, "df"):
+            return [{"error": "DataFrame not initialized in DataForensics object", "hint": "Make sure to set forensics.df before calling this method"}]
+            
+        if self.df is None:
+            return [{"error": "DataFrame is None in DataForensics object", "hint": "Make sure forensics.df is assigned a valid DataFrame"}]
+            
+        if len(self.df) == 0:
+            return [{"error": "DataFrame is empty (0 rows)", "hint": "The dataset must contain at least one row of data"}]
 
-        claude_findings = []
+        claude_findings: List[Dict[str, Any]] = []
 
         # Determine number of chunks needed
-        total_rows = len(self.df)
-        chunk_count = (
+        total_rows: int = len(self.df)
+        chunk_count: int = (
             total_rows + max_rows_per_chunk - 1
         ) // max_rows_per_chunk  # Ceiling division
 
-        print(f"Segmenting dataset with {total_rows} rows into {chunk_count} chunks")
+        logger.info(
+            f"Segmenting dataset with {total_rows} rows into {chunk_count} chunks"
+        )
 
         # Process each chunk
         for i in range(chunk_count):
@@ -1176,7 +1274,7 @@ class DataForensics:
             if len(chunk_df) == 0:
                 continue
 
-            print(
+            logger.info(
                 f"Analyzing chunk {i + 1}/{chunk_count} with rows {start_idx} to {end_idx - 1}"
             )
 
@@ -1195,7 +1293,7 @@ class DataForensics:
                 ]
                 if chunk_calc_chain:
                     excel_metadata["calc_chain"] = chunk_calc_chain
-                    print(
+                    logger.info(
                         f"Including {len(chunk_calc_chain)} calcChain entries for chunk {i + 1}"
                     )
 
@@ -1233,6 +1331,31 @@ class DataForensics:
                         "top_values": {str(k): int(v) for k, v in top_values.items()},
                     }
 
+            # Validate and clean the data before sending to Claude
+            # Ensure we're not sending NaN or other problematic values that might cause JSON issues
+            clean_chunk_df = chunk_df.copy()
+            for col in clean_chunk_df.columns:
+                if pd.api.types.is_numeric_dtype(clean_chunk_df[col]):
+                    # Replace NaN, Inf, -Inf with null for JSON compatibility
+                    clean_chunk_df[col] = clean_chunk_df[col].replace([np.inf, -np.inf, np.nan], None)
+            
+            # Ensure both numeric and categorical stats don't have NaN or infinity values
+            for col, stats in numeric_stats.items():
+                for key, value in stats.items():
+                    if isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
+                        numeric_stats[col][key] = None
+            
+            # Convert the dataframe to string with error handling
+            try:
+                df_string = clean_chunk_df.to_string()
+                # Truncate if too large (to avoid token limits)
+                if len(df_string) > 200000:  # ~200KB should be safe
+                    logger.warning(f"Chunk {i+1} data too large, truncating for Claude analysis")
+                    df_string = df_string[:200000] + "\n[... truncated ...]"
+            except Exception as df_err:
+                logger.error(f"Error converting dataframe to string: {df_err}")
+                df_string = f"[Error rendering dataframe: {df_err}]"
+            
             # Create prompt for Claude
             prompt = f"""Analyze this dataset chunk for potential data manipulation or anomalies.
 
@@ -1247,7 +1370,7 @@ Categorical Columns Statistics:
 {json.dumps(categorical_stats, indent=2)}
 
 All Data in this Chunk:
-{chunk_df.to_string()}
+{df_string}
 
 {
                 f'''
@@ -1299,21 +1422,36 @@ Return your findings in the following JSON format (ONLY respond with valid JSON)
                 )
 
                 # Extract JSON from response
-                content = response.content[0].text
-                json_start = content.find("{")
-                json_end = content.rfind("}") + 1
-                json_str = content[json_start:json_end]
+                content: str = response.content[0].text
+                json_start: int = content.find("{")
+                json_end: int = content.rfind("}") + 1
+                
+                # Check if we actually found valid JSON markers
+                if json_start == -1 or json_end <= json_start:
+                    logger.error(f"Could not find valid JSON markers in Claude's response for chunk {i+1}")
+                    logger.error(f"Claude response: {content[:200]}...")
+                    
+                    # Create an error finding
+                    claude_findings.append({
+                        "error": "Invalid JSON format in Claude response",
+                        "chunk": i + 1,
+                        "rows": f"{start_idx}-{end_idx - 1}",
+                        "raw_response": content[:500] if len(content) > 500 else content
+                    })
+                    continue  # Skip to next chunk
+                
+                json_str: str = content[json_start:json_end]
 
                 # Handle JSON parsing with error checking
                 try:
-                    chunk_findings = json.loads(json_str)
+                    chunk_findings: Any = json.loads(json_str)
 
                     # Verify that chunk_findings is a dictionary before using .get()
                     if not isinstance(chunk_findings, dict):
-                        print(
-                            f"Warning: Claude returned non-dictionary result for chunk {i + 1}: {chunk_findings}"
+                        logger.warning(
+                            f"Claude returned non-dictionary result for chunk {i + 1}: {chunk_findings}"
                         )
-                        chunk_findings = {
+                        chunk_findings: Dict[str, Any] = {
                             "error": "Invalid response format",
                             "raw_response": str(chunk_findings),
                         }
@@ -1336,8 +1474,8 @@ Return your findings in the following JSON format (ONLY respond with valid JSON)
                     if isinstance(chunk_findings, dict):
                         claude_findings.append(chunk_findings)
                     else:
-                        print(
-                            f"WARNING: After validation, chunk_findings is still not a dictionary: {type(chunk_findings)}"
+                        logger.warning(
+                            f"After validation, chunk_findings is still not a dictionary: {type(chunk_findings)}"
                         )
                         error_dict = {
                             "error": f"Invalid finding type after validation: {type(chunk_findings)}",
@@ -1372,46 +1510,73 @@ Return your findings in the following JSON format (ONLY respond with valid JSON)
                                         }
                                     )
                 except json.JSONDecodeError as e:
-                    import traceback
-
                     error_details = traceback.format_exc()
-                    error_msg = f"ERROR: JSON parse error in chunk {i + 1}: {e}"
-                    error_box = "*" * len(error_msg)
-                    print(f"\n{error_box}\n{error_msg}\n{error_box}")
-                    print(f"ERROR DETAILS:\n{error_details}")
-                    print(f"PROBLEMATIC JSON STRING: {json_str[:200]}...")
+                    logger.error(f"JSON parse error in chunk {i + 1}: {e}")
+                    logger.error(f"Error details: {error_details}")
+                    
+                    # More comprehensive error analysis
+                    json_error_position = e.pos if hasattr(e, 'pos') else -1
+                    json_context = ''
+                    if json_error_position > 0 and json_error_position < len(json_str):
+                        start_pos = max(0, json_error_position - 20)
+                        end_pos = min(len(json_str), json_error_position + 20)
+                        error_marker = '→ERROR→'
+                        json_context = (
+                            json_str[start_pos:json_error_position] + 
+                            error_marker + 
+                            json_str[json_error_position:end_pos]
+                        )
+                        
+                    logger.error(f"JSON error context: {json_context}")
+                    logger.error(f"Problematic JSON string: {json_str[:200]}...")
+                    
                     chunk_findings = {
                         "error": f"JSON parse error: {str(e)}",
                         "chunk": i + 1,
-                        "json_start": json_str[:200]
-                        if len(json_str) > 200
-                        else json_str,
+                        "rows": f"{start_idx}-{end_idx - 1}",
+                        "json_start": json_str[:200] if len(json_str) > 200 else json_str,
+                        "json_error_position": json_error_position,
+                        "json_context": json_context
                     }
                     claude_findings.append(chunk_findings)
 
             except Exception as e:
-                import traceback
-
                 error_details = traceback.format_exc()
-                error_msg = f"ERROR: Failed processing chunk {i + 1}: {e}"
-                error_box = "*" * len(error_msg)
-                print(f"\n{error_box}\n{error_msg}\n{error_box}")
-                print(f"ERROR DETAILS:\n{error_details}")
-
+                logger.error(f"Failed processing chunk {i + 1}: {e}")
+                logger.error(f"Error details: {error_details}")
+                
+                # Try to determine if it was a Claude API error or another type
+                error_type = "API" if "anthropic" in str(e).lower() or "claude" in str(e).lower() else "Processing"
+                error_hint = ""
+                
+                # Specific handling for common error types
+                if "context window" in str(e).lower() or "token limit" in str(e).lower():
+                    error_hint = "The data chunk may be too large to process. Try reducing max_rows_per_chunk."
+                elif "rate limit" in str(e).lower():
+                    error_hint = "API rate limit exceeded. Try again after waiting a few minutes."
+                elif "timeout" in str(e).lower():
+                    error_hint = "Request timed out. The API may be experiencing high load."
+                
                 error_data = {
-                    "error": str(e),
-                    "traceback": error_details[
-                        :500
-                    ],  # Include part of traceback but not too long
+                    "error": f"{error_type} error: {str(e)}",
+                    "hint": error_hint,
+                    "traceback": error_details[:500],  # Include part of traceback but not too long
                     "chunk": i + 1,
                     "rows": f"{start_idx}-{end_idx - 1}",
+                    "rows_count": end_idx - start_idx,
+                    # Include information on chunk size to help diagnose if the chunk is too large
+                    "chunk_size_bytes": len(chunk_df.to_string()) if 'chunk_df' in locals() else -1
                 }
                 claude_findings.append(error_data)
 
         return claude_findings
 
-    def generate_report(self):
-        """Generate an HTML report of the findings."""
+    def generate_report(self) -> str:
+        """Generate an HTML report of the findings.
+        
+        Returns:
+            str: HTML report of findings
+        """
         if not self.findings:
             return "No anomalies detected in the data."
 
@@ -1569,26 +1734,41 @@ Return your findings in the following JSON format (ONLY respond with valid JSON)
 class ExcelForensics:
     """Specialized class for forensic analysis of Excel files."""
 
-    def __init__(self, excel_file):
-        """Initialize with an Excel file path."""
-        self.excel_file = excel_file
-        self.temp_dir = None
-        self.extracted = False
-        self.calc_chain = []
+    def __init__(self, excel_file: str) -> None:
+        """Initialize with an Excel file path.
+        
+        Args:
+            excel_file: Path to the Excel file to analyze
+        """
+        self.excel_file: str = excel_file
+        self.temp_dir: Optional[str] = None
+        self.extracted: bool = False
+        self.calc_chain: List[Dict[str, Any]] = []
 
-    def __enter__(self):
-        """Context manager entry - extract the Excel file."""
+    def __enter__(self) -> 'ExcelForensics':
+        """Context manager entry - extract the Excel file.
+        
+        Returns:
+            ExcelForensics: Self for use with context manager
+        """
         self.temp_dir = tempfile.mkdtemp()
         self.extract_excel()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - clean up temporary files."""
+    def __exit__(self, exc_type: Optional[type], exc_val: Optional[Exception], 
+                exc_tb: Optional[Any]) -> None:
+        """Context manager exit - clean up temporary files.
+        
+        Args:
+            exc_type: Exception type if an exception was raised in the context
+            exc_val: Exception value if an exception was raised
+            exc_tb: Exception traceback if an exception was raised
+        """
         if self.temp_dir and os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
 
-    def extract_excel(self):
-        """Extract Excel file contents."""
+    def extract_excel(self) -> None:
+        """Extract Excel file contents into a temporary directory."""
         with zipfile.ZipFile(self.excel_file, "r") as zip_ref:
             zip_ref.extractall(self.temp_dir)
         self.extracted = True
@@ -1596,8 +1776,8 @@ class ExcelForensics:
         # Parse calculation chain
         self.parse_calc_chain()
 
-    def parse_calc_chain(self):
-        """Parse Excel calculation chain XML file."""
+    def parse_calc_chain(self) -> None:
+        """Parse Excel calculation chain XML file to extract calculation ordering information."""
         if not self.extracted:
             self.extract_excel()
 
@@ -1617,9 +1797,9 @@ class ExcelForensics:
 
                     self.calc_chain.append({"ref": ref, "row": row_num, "col": col_str})
         else:
-            print("No calculation chain found in this Excel file.")
+            logger.info("No calculation chain found in this Excel file.")
 
-    def analyze_row_movement(self, row_numbers):
+    def analyze_row_movement(self, row_numbers: List[int]) -> List[Dict[str, Any]]:
         """
         Analyze the calculation chain to detect evidence of row movement.
 
@@ -1627,7 +1807,7 @@ class ExcelForensics:
             row_numbers: List of row numbers to check for movement
 
         Returns:
-            List of findings about row movements
+            List[Dict[str, Any]]: Findings about row movements, each with details about the evidence
         """
         findings = []
 
