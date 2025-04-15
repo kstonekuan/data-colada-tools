@@ -222,6 +222,59 @@
     </div>
 </div>
 
+<!-- Column Analysis Card -->
+<div class="row mt-4">
+    <div class="col-md-8 offset-md-2">
+        <div class="card">
+            <div class="card-header bg-light">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">
+                        <i class="fas fa-table me-2"></i>Column Analysis
+                    </h5>
+                    <button class="btn btn-link collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#columnAnalysisCollapse" aria-expanded="false" aria-controls="columnAnalysisCollapse">
+                        <i class="fas fa-chevron-down"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="collapse" id="columnAnalysisCollapse">
+                <div class="card-body">
+                    <p class="text-muted">
+                        <i class="fas fa-info-circle me-1"></i>Analyze unique values in each column using Claude to identify potential anomalies or patterns.
+                    </p>
+                    
+                    <form action="{{ url_for('analyze_columns') }}" method="post" enctype="multipart/form-data" id="column-analysis-form">
+                        <div class="upload-container" id="column-upload-area">
+                            <div class="upload-icon">
+                                <i class="fas fa-file-upload"></i>
+                            </div>
+                            <h5>Drag & Drop your dataset file here</h5>
+                            <p>or</p>
+                            <input type="file" id="column-file" name="file" class="d-none">
+                            <button type="button" class="btn btn-outline-primary" id="column-browse-btn">
+                                <i class="fas fa-folder-open me-1"></i>Browse Files
+                            </button>
+                            <div id="column-file-name"></div>
+                        </div>
+                        
+                        <div class="mb-3 mt-3">
+                            <label class="form-label">Specific columns to analyze (optional):</label>
+                            <input type="text" class="form-control" name="columns" 
+                                placeholder="E.g., id, score, treatment, response">
+                            <small class="form-text text-muted">Separate multiple column names with commas. Leave blank to analyze all columns.</small>
+                        </div>
+                        
+                        <div class="text-center mt-3">
+                            <button type="submit" class="btn btn-primary" id="column-analyze-btn" disabled>
+                                <i class="fas fa-table-columns me-2"></i>Analyze Column Values
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="row mt-5">
     <div class="col-md-4">
         <div class="card h-100">
@@ -261,6 +314,14 @@
         const uploadArea = document.getElementById('upload-area');
         const loadingIndicator = document.getElementById('loading-indicator');
         const steps = document.querySelectorAll('.step');
+        
+        // Column analysis form elements
+        const columnAnalysisForm = document.getElementById('column-analysis-form');
+        const columnFileInput = document.getElementById('column-file');
+        const columnBrowseBtn = document.getElementById('column-browse-btn');
+        const columnAnalyzeBtn = document.getElementById('column-analyze-btn');
+        const columnFileNameDisplay = document.getElementById('column-file-name');
+        const columnUploadArea = document.getElementById('column-upload-area');
         
         // Paper upload elements
         const includePaperCheckbox = document.getElementById('include-paper');
@@ -410,6 +471,84 @@
             
             // Start the step animation after a short delay
             setTimeout(activateNextStep, 500);
+        });
+        
+        // Column Analysis Form Handling
+        
+        // Handle column browse button click
+        columnBrowseBtn.addEventListener('click', function() {
+            columnFileInput.click();
+        });
+        
+        // Handle column file selection
+        columnFileInput.addEventListener('change', function() {
+            if (columnFileInput.files.length > 0) {
+                columnFileNameDisplay.innerHTML = '<span class="badge bg-success p-2 shadow-sm mt-2">' +
+                    '<i class="fas fa-check-circle me-1"></i> Selected: ' + 
+                    columnFileInput.files[0].name + '</span>';
+                columnAnalyzeBtn.disabled = false;
+                columnUploadArea.classList.add('border-success');
+            } else {
+                columnFileNameDisplay.textContent = '';
+                columnAnalyzeBtn.disabled = true;
+                columnUploadArea.classList.remove('border-success');
+            }
+        });
+        
+        // Handle column drag and drop
+        columnUploadArea.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            columnUploadArea.style.backgroundColor = '#e9ecef';
+        });
+        
+        columnUploadArea.addEventListener('dragleave', function() {
+            columnUploadArea.style.backgroundColor = '#f8f9fa';
+        });
+        
+        columnUploadArea.addEventListener('drop', function(e) {
+            e.preventDefault();
+            columnUploadArea.style.backgroundColor = '#f8f9fa';
+            
+            if (e.dataTransfer.files.length > 0) {
+                columnFileInput.files = e.dataTransfer.files;
+                columnFileNameDisplay.innerHTML = '<span class="badge bg-success p-2 shadow-sm mt-2">' +
+                    '<i class="fas fa-check-circle me-1"></i> Selected: ' + 
+                    e.dataTransfer.files[0].name + '</span>';
+                columnAnalyzeBtn.disabled = false;
+                columnUploadArea.classList.add('border-success');
+            }
+        });
+        
+        // Show loading indicator when column analysis form is submitted
+        columnAnalysisForm.addEventListener('submit', function() {
+            loadingIndicator.style.display = 'block';
+            columnBrowseBtn.disabled = true;
+            columnAnalyzeBtn.disabled = true;
+            
+            // Activate only the first, second, and last steps for a simpler animation
+            steps[0].classList.add('active');
+            steps[0].querySelector('.step-badge').classList.remove('bg-secondary');
+            steps[0].querySelector('.step-badge').classList.add('bg-primary');
+            
+            setTimeout(function() {
+                steps[0].classList.remove('active');
+                steps[0].querySelector('.step-badge').classList.remove('bg-primary');
+                steps[0].querySelector('.step-badge').classList.add('bg-success');
+                
+                steps[1].classList.add('active');
+                steps[1].querySelector('.step-badge').classList.remove('bg-secondary');
+                steps[1].querySelector('.step-badge').classList.add('bg-primary');
+            }, 2000);
+            
+            setTimeout(function() {
+                steps[1].classList.remove('active');
+                steps[1].querySelector('.step-badge').classList.remove('bg-primary');
+                steps[1].querySelector('.step-badge').classList.add('bg-success');
+                
+                steps[5].classList.add('active');
+                steps[5].querySelector('.step-badge').classList.remove('bg-secondary');
+                steps[5].querySelector('.step-badge').classList.add('bg-primary');
+            }, 5000);
         });
     });
 </script>

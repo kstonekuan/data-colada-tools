@@ -164,6 +164,113 @@ class DataForensics:
         self.detect_inlier_patterns()
 
         return self.findings
+        
+    def analyze_column_unique_values(self, client: Anthropic, columns: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Analyze unique values in each column using Claude.
+        
+        Args:
+            client: Claude API client
+            columns: Optional list of columns to analyze. If None, analyze all columns.
+            
+        Returns:
+            Dictionary mapping column names to analysis results
+        """
+        if self.df is None:
+            raise ValueError("No dataset loaded. Call analyze_dataset first.")
+            
+        # Use all columns if none specified
+        if columns is None:
+            columns = self.df.columns.tolist()
+        elif not all(col in self.df.columns for col in columns):
+            missing = [col for col in columns if col not in self.df.columns]
+            raise ValueError(f"Columns not found in dataset: {missing}")
+            
+        results = {}
+        
+        for column in columns:
+            unique_values = self.df[column].unique()
+            
+            # Limit to 100 values if there are too many
+            if len(unique_values) > 100:
+                logger.info(f"Column {column} has {len(unique_values)} unique values. Sampling 100 for analysis.")
+                # Take a representative sample including first, last, and random values
+                sampled_values = np.concatenate([
+                    unique_values[:50],  # First 50 values
+                    unique_values[-50:]  # Last 50 values
+                ])
+                values_for_analysis = sampled_values
+                sampling_note = f"NOTE: This column has {len(unique_values)} unique values. Only showing a sample of 100."
+            else:
+                values_for_analysis = unique_values
+                sampling_note = f"Complete set of {len(unique_values)} unique values."
+            
+            # Convert to string representations when possible
+            values_str = []
+            for val in values_for_analysis:
+                if pd.isna(val):
+                    values_str.append("NA/NULL")
+                elif isinstance(val, (float, int, str, bool)):
+                    values_str.append(str(val))
+                else:
+                    values_str.append(repr(val))
+            
+            # Create a prompt for Claude to analyze this column's unique values
+            prompt = f"""Analyze the following unique values from the column '{column}' in a research dataset.
+
+Column: {column}
+Data type: {self.df[column].dtype}
+{sampling_note}
+
+Unique values:
+{json.dumps(values_str, indent=2)}
+
+Please analyze these values and identify any potential anomalies, patterns, or issues that might indicate data manipulation.
+Things to look for:
+1. Unusual patterns or sequences
+2. Gaps or clusters in numeric data 
+3. Unexplained outliers
+4. Non-random distribution of digits
+5. Unusual formatting or inconsistencies
+6. Values that seem out of context for this type of data
+7. Any other suspicious patterns
+
+Be concise but thorough in your analysis. If you don't see any issues, say so.
+Rate the suspiciousness of this column's values on a scale of 1-10, where 10 is highly suspicious.
+Format this exactly as: "SUSPICION_RATING: [1-10]"
+"""
+            
+            try:
+                # Send prompt to Claude for analysis
+                response = client.messages.create(
+                    model="claude-3-7-sonnet-latest",
+                    max_tokens=1500,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                
+                # Extract the response
+                analysis = response.content[0].text
+                
+                # Parse the suspicion rating
+                suspicion_rating = None
+                match = re.search(r"SUSPICION_RATING:\s*(\d+)", analysis)
+                if match:
+                    suspicion_rating = int(match.group(1))
+                
+                results[column] = {
+                    "analysis": analysis,
+                    "unique_count": len(unique_values),
+                    "suspicion_rating": suspicion_rating,
+                    "sample_analyzed": len(values_for_analysis) < len(unique_values)
+                }
+                
+            except Exception as e:
+                logger.error(f"Error analyzing column {column}: {e}")
+                results[column] = {
+                    "error": str(e),
+                    "unique_count": len(unique_values)
+                }
+                
+        return results
 
     def check_sorting_anomalies(self, id_col: str, sort_cols: Union[str, List[str]], 
                             check_dependent_vars: bool = True,

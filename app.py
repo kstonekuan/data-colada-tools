@@ -18,10 +18,11 @@ from flask import (
     request,
     send_from_directory,
     url_for,
+    jsonify,
 )
 from werkzeug.utils import secure_filename
 
-from src.main import detect_data_manipulation, setup_client
+from src.main import detect_data_manipulation, setup_client, analyze_column_unique_values
 
 # Set up logging
 logging.basicConfig(
@@ -1110,6 +1111,135 @@ def previous_results():
 
     return render_template("previous_results.html", results=results)
 
+
+@app.route("/analyze-columns", methods=["POST"])
+def analyze_columns():
+    # Check if file was uploaded
+    if "file" not in request.files:
+        flash("No file part")
+        return redirect(url_for("index"))
+        
+    file = request.files["file"]
+    
+    # Check if the file is valid
+    if file.filename == "":
+        flash("No file selected")
+        return redirect(url_for("index"))
+        
+    if not file or not allowed_file(file.filename):
+        allowed_ext = ", ".join(app.config["ALLOWED_EXTENSIONS"])
+        flash(f"Invalid file type. Allowed types: {allowed_ext}")
+        return redirect(url_for("index"))
+    
+    # Generate a unique analysis ID
+    analysis_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + str(uuid.uuid4())[:8]
+    analysis_folder = os.path.join(app.config["RESULTS_FOLDER"], analysis_id)
+    os.makedirs(analysis_folder, exist_ok=True)
+    
+    # Save the uploaded file
+    filename = secure_filename(file.filename)
+    file_path = os.path.join(analysis_folder, filename)
+    file.save(file_path)
+    
+    # Get columns to analyze (if specified)
+    columns_to_analyze = request.form.get("columns", "").strip()
+    columns = columns_to_analyze.split(",") if columns_to_analyze else None
+    
+    # Set up Claude client
+    try:
+        client = setup_client()
+    except Exception as e:
+        flash(f"Error setting up Claude API client: {str(e)}")
+        return redirect(url_for("index"))
+    
+    # Run the column analysis
+    try:
+        column_analysis = analyze_column_unique_values(client, file_path, columns, analysis_folder)
+        
+        # Save the analysis results
+        analysis_path = os.path.join(analysis_folder, "column_analysis.json")
+        with open(analysis_path, "w") as f:
+            json.dump(column_analysis, f, indent=2)
+            
+        # Create a human-readable report
+        report_content = "# Column Analysis Report\n\n"
+        report_content += f"Dataset: {filename}\n\n"
+        report_content += f"Total columns analyzed: {column_analysis['summary']['total_columns_analyzed']}\n"
+        report_content += f"Average suspicion rating: {column_analysis['summary']['average_suspicion']:.2f}/10\n\n"
+        
+        # Add highly suspicious columns
+        if column_analysis['summary']['suspicious_columns']:
+            report_content += "## Highly Suspicious Columns\n\n"
+            for col in column_analysis['summary']['suspicious_columns']:
+                report_content += f"### {col['column']} (Rating: {col['rating']}/10)\n\n"
+                if col['column'] in column_analysis:
+                    report_content += column_analysis[col['column']]['analysis'] + "\n\n"
+                    
+        # Add all other columns
+        report_content += "## All Columns\n\n"
+        for col_name, col_data in column_analysis.items():
+            if col_name != "summary" and col_name not in [c['column'] for c in column_analysis['summary']['suspicious_columns']]:
+                suspicion = col_data.get('suspicion_rating', 'N/A')
+                report_content += f"### {col_name} (Rating: {suspicion}/10)\n\n"
+                report_content += col_data.get('analysis', 'No analysis available') + "\n\n"
+        
+        # Save the report
+        report_path = os.path.join(analysis_folder, "column_analysis_report.md")
+        with open(report_path, "w") as f:
+            f.write(report_content)
+            
+        # Redirect to results page
+        return redirect(url_for("view_column_analysis", analysis_id=analysis_id))
+                
+    except Exception as e:
+        logging.error(f"Error analyzing columns: {str(e)}")
+        logging.error(traceback.format_exc())
+        flash(f"Error analyzing columns: {str(e)}")
+        return redirect(url_for("index"))
+
+@app.route("/column-analysis/<analysis_id>")
+def view_column_analysis(analysis_id):
+    # Validate analysis ID format to prevent security issues
+    if not analysis_id or not re.match(r"^[a-zA-Z0-9_\-]+$", analysis_id):
+        logging.warning(f"Invalid analysis ID format: {analysis_id}")
+        flash("Invalid analysis ID format")
+        return redirect(url_for("index"))
+        
+    analysis_folder = os.path.join(app.config["RESULTS_FOLDER"], analysis_id)
+    
+    # Check if the analysis folder exists
+    if not os.path.exists(analysis_folder):
+        flash("Analysis not found")
+        return redirect(url_for("index"))
+        
+    # Load the column analysis results
+    try:
+        analysis_path = os.path.join(analysis_folder, "column_analysis.json")
+        with open(analysis_path, "r") as f:
+            column_analysis = json.load(f)
+            
+        # Load the report for display
+        report_path = os.path.join(analysis_folder, "column_analysis_report.md")
+        with open(report_path, "r") as f:
+            report_content = f.read()
+            
+        # Convert markdown to HTML
+        if HAS_MARKDOWN:
+            report_html = markdown.markdown(report_content)
+        else:
+            report_html = basic_markdown_to_html(report_content)
+            
+        return render_template(
+            "results.html",
+            analysis_id=analysis_id,
+            report=report_html,
+            title="Column Analysis Results",
+            has_suspicious_columns=len(column_analysis['summary']['suspicious_columns']) > 0
+        )
+    except Exception as e:
+        logging.error(f"Error loading column analysis: {str(e)}")
+        flash(f"Error loading column analysis: {str(e)}")
+        return redirect(url_for("index"))
 
 @app.route("/upload", methods=["POST"])
 def upload_file():

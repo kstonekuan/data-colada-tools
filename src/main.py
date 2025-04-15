@@ -132,6 +132,87 @@ Be concise and only include the JSON in your response."""
         }
 
 
+def analyze_column_unique_values(
+    client: Anthropic,
+    data_path: str,
+    columns: Optional[List[str]] = None,
+    output_dir: Optional[str] = None
+) -> Dict[str, Any]:
+    """Analyze unique values in each column using Claude.
+    
+    Args:
+        client: Claude API client
+        data_path: Path to the dataset file
+        columns: Optional list of columns to analyze. If None, analyze all columns.
+        output_dir: Directory to save output file
+        
+    Returns:
+        Dictionary mapping column names to analysis results
+    """
+    logger.info(f"Analyzing unique column values in: {data_path}")
+    
+    # Create output directory if needed
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    # Initialize data forensics
+    forensics = DataForensics()
+    
+    # Read the data file
+    try:
+        forensics.analyze_dataset(data_path)
+    except Exception as e:
+        error_msg = f"Error loading dataset: {str(e)}"
+        logger.error(error_msg)
+        return {"error": error_msg}
+    
+    # Analyze unique values in each column
+    try:
+        results = forensics.analyze_column_unique_values(client, columns)
+    except Exception as e:
+        error_msg = f"Error analyzing column values: {str(e)}"
+        logger.error(error_msg)
+        return {"error": error_msg}
+    
+    # Generate a summary report of highly suspicious columns
+    suspicious_columns = []
+    for column, result in results.items():
+        if "suspicion_rating" in result and result["suspicion_rating"] and result["suspicion_rating"] >= 7:
+            suspicious_columns.append({
+                "column": column,
+                "rating": result["suspicion_rating"],
+                "unique_count": result["unique_count"]
+            })
+    
+    # Sort by suspicion rating (descending)
+    suspicious_columns.sort(key=lambda x: x["rating"], reverse=True)
+    
+    # Include the summary in the results
+    results["summary"] = {
+        "total_columns_analyzed": len(results) - 1,  # Exclude the summary key
+        "suspicious_columns": suspicious_columns,
+        "average_suspicion": np.mean([r.get("suspicion_rating", 0) or 0 for c, r in results.items() if c != "summary"])
+    }
+    
+    # Save results to file if output directory provided
+    if output_dir:
+        report_path = os.path.join(output_dir, f"column_analysis_{os.path.basename(data_path)}.json")
+        with open(report_path, "w") as f:
+            # Handle numpy types by converting to Python types
+            def json_serializer(obj):
+                if isinstance(obj, np.integer):
+                    return int(obj)
+                if isinstance(obj, np.floating):
+                    return float(obj)
+                if isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+            
+            json.dump(results, f, indent=2, default=json_serializer)
+        logger.info(f"Column analysis saved to {report_path}")
+    
+    return results
+
 def detect_data_manipulation(
     client: Anthropic,
     data_path: str,
@@ -770,16 +851,52 @@ def main() -> int:
     parser.add_argument("--api-key", help="Claude API key")
     parser.add_argument("--data", required=True, help="Path to input data file")
     parser.add_argument("--output", help="Directory to save output reports")
+    parser.add_argument("--analyze-columns", action="store_true", 
+                      help="Analyze unique values in each column using Claude")
+    parser.add_argument("--columns", nargs="+", 
+                      help="Specific columns to analyze (for use with --analyze-columns)")
 
     args: argparse.Namespace = parser.parse_args()
 
     try:
         client: Anthropic = setup_client(args.api_key)
-        report: Optional[str] = detect_data_manipulation(client, args.data, args.output)
-        logger.info("Analysis complete!")
+        
+        if args.analyze_columns:
+            # Run column unique value analysis
+            logger.info("Running column unique value analysis...")
+            results = analyze_column_unique_values(client, args.data, args.columns, args.output)
+            
+            # Print a summary to the console
+            if "error" in results:
+                logger.error(f"Error: {results['error']}")
+                return 1
+                
+            if "summary" in results:
+                summary = results["summary"]
+                print(f"\nColumn Analysis Summary:")
+                print(f"- Analyzed {summary['total_columns_analyzed']} columns")
+                print(f"- Average suspicion rating: {summary['average_suspicion']:.2f}/10")
+                
+                if summary["suspicious_columns"]:
+                    print("\nHighly suspicious columns:")
+                    for col in summary["suspicious_columns"]:
+                        print(f"- {col['column']}: {col['rating']}/10 ({col['unique_count']} unique values)")
+                else:
+                    print("\nNo highly suspicious columns found.")
+                    
+                if args.output:
+                    print(f"\nDetailed results saved to: {os.path.join(args.output, f'column_analysis_{os.path.basename(args.data)}.json')}")
+            
+            logger.info("Column analysis complete!")
+        else:
+            # Run full data manipulation detection
+            report: Optional[str] = detect_data_manipulation(client, args.data, args.output)
+            logger.info("Analysis complete!")
+            
         return 0
     except Exception as e:
         logger.error(f"Error during analysis: {e}")
+        traceback.print_exc()
         return 1
 
 
