@@ -8,11 +8,12 @@ import tempfile
 import traceback
 import xml.etree.ElementTree as ET
 import zipfile
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import polars as pl
 import seaborn as sns
 from anthropic import Anthropic
 
@@ -27,14 +28,21 @@ class DataForensics:
         """Initialize the DataForensics object."""
         self.findings: List[Dict[str, Any]] = []
         self.plots: List[Dict[str, Any]] = []
-        self.df: Optional[pd.DataFrame] = None
+        self.df_pl: Optional[pl.DataFrame] = None  # Polars DataFrame
+        self.df: Optional[pd.DataFrame] = (
+            None  # Also keep pandas DataFrame for compatibility
+        )
         self.excel_metadata: Optional[Dict[str, List[Dict[str, Any]]]] = None
 
-    def analyze_dataset(self, filepath: str, id_col: Optional[str] = None, 
-                      sort_cols: Optional[Union[str, List[str]]] = None,
-                      user_suspicions: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    def analyze_dataset(
+        self,
+        filepath: str,
+        id_col: Optional[str] = None,
+        sort_cols: Optional[Union[str, List[str]]] = None,
+        user_suspicions: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         """Analyze a dataset for potential manipulation.
-        
+
         Args:
             filepath: Path to the dataset file
             id_col: Column name for IDs
@@ -49,92 +57,130 @@ class DataForensics:
                                 "suspect_grouping": str,  # Potential column to check for group-based manipulation
                                 "description": str  # Free-text description of suspicions
                             }
-            
+
         Returns:
             List of findings as dictionaries
         """
         self.findings = []
         self.plots = []
-        
+
         # Initialize user suspicions with defaults if not provided
         self.user_suspicions = user_suspicions or {}
-        
+
         # Add a entry for the suspicions to the findings list so it's recorded
         if self.user_suspicions:
-            self.findings.append({
-                "type": "user_suspicions",
-                "details": self.user_suspicions,
-                "note": "User-provided analysis guidance (used as supplementary information only)"
-            })
+            self.findings.append(
+                {
+                    "type": "user_suspicions",
+                    "details": self.user_suspicions,
+                    "note": "User-provided analysis guidance (used as supplementary information only)",
+                }
+            )
 
         # Determine file type and read data
         ext = os.path.splitext(filepath)[1].lower()
 
-        if ext == ".xlsx":
-            self.df = pd.read_excel(filepath)
-            self.excel_metadata = self.extract_excel_metadata(filepath)
-        elif ext == ".csv":
-            self.df = pd.read_csv(filepath)
-        elif ext == ".dta":
-            self.df = pd.read_stata(filepath)
-        elif ext == ".sav":
-            try:
-                import pyreadstat
+        # Load data with Polars when possible, fallback to pandas for special formats
+        try:
+            if ext == ".csv":
+                # Use Polars for CSV files
+                self.df_pl = pl.read_csv(filepath)
+                # Create pandas dataframe for compatibility with existing code
+                self.df = self.df_pl.to_pandas()
+            elif ext == ".xlsx":
+                # For Excel files, first read with pandas for metadata
+                self.df = pd.read_excel(filepath)
+                # Then convert to polars
+                self.df_pl = pl.from_pandas(self.df)
+                self.excel_metadata = self.extract_excel_metadata(filepath)
+            elif ext == ".parquet":
+                # Direct polars support for parquet
+                self.df_pl = pl.read_parquet(filepath)
+                self.df = self.df_pl.to_pandas()
+            elif ext == ".dta":
+                # Use pandas for Stata files, then convert
+                self.df = pd.read_stata(filepath)
+                self.df_pl = pl.from_pandas(self.df)
+            elif ext == ".sav":
+                try:
+                    import pyreadstat
 
-                # Try different encodings
-                encodings = [
-                    "latin1",
-                    "cp1252",
-                    None,
-                ]  # None lets pyreadstat try to detect encoding
-                read_success = False
+                    # Try different encodings
+                    encodings = [
+                        "latin1",
+                        "cp1252",
+                        None,
+                    ]  # None lets pyreadstat try to detect encoding
+                    read_success = False
 
-                for encoding in encodings:
-                    try:
-                        self.df, meta = pyreadstat.read_sav(filepath, encoding=encoding)
-                        read_success = True
-                        break
-                    except Exception as e:
-                        last_error = str(e)
-                        continue
+                    for encoding in encodings:
+                        try:
+                            self.df, meta = pyreadstat.read_sav(
+                                filepath, encoding=encoding
+                            )
+                            read_success = True
+                            # Convert to polars
+                            self.df_pl = pl.from_pandas(self.df)
+                            break
+                        except Exception as e:
+                            last_error = str(e)
+                            continue
 
-                if not read_success:
+                    if not read_success:
+                        raise ValueError(
+                            f"Could not read SPSS file with any encoding: {last_error}"
+                        )
+                except ImportError:
                     raise ValueError(
-                        f"Could not read SPSS file with any encoding: {last_error}"
+                        "The pyreadstat package is required to read SPSS files"
                     )
-            except ImportError:
-                raise ValueError(
-                    "The pyreadstat package is required to read SPSS files"
-                )
-        else:
-            raise ValueError(f"Unsupported file format: {ext}")
+            else:
+                raise ValueError(f"Unsupported file format: {ext}")
+
+            # Ensure we have both pandas and polars dataframes available
+            if self.df is None and self.df_pl is not None:
+                self.df = self.df_pl.to_pandas()
+            elif self.df_pl is None and self.df is not None:
+                self.df_pl = pl.from_pandas(self.df)
+
+        except Exception as e:
+            raise ValueError(f"Error reading file {filepath}: {str(e)}")
 
         # Analyze sorting anomalies if sort columns are provided
         if sort_cols and id_col:
             # Check if user has suspicions related to sorting or out-of-order values
             additional_columns_to_check = []
             prioritize_out_of_order = False
-            
+
             if "potential_issues" in self.user_suspicions:
-                potential_issues = [issue.lower() for issue in self.user_suspicions.get("potential_issues", [])]
-                prioritize_out_of_order = any(issue in ["out of order", "out-of-order", "out_of_order", "sorting"] 
-                                             for issue in potential_issues)
-                
+                potential_issues = [
+                    issue.lower()
+                    for issue in self.user_suspicions.get("potential_issues", [])
+                ]
+                prioritize_out_of_order = any(
+                    issue in ["out of order", "out-of-order", "out_of_order", "sorting"]
+                    for issue in potential_issues
+                )
+
             if "focus_columns" in self.user_suspicions:
-                additional_columns_to_check = self.user_suspicions.get("focus_columns", [])
-                
+                additional_columns_to_check = self.user_suspicions.get(
+                    "focus_columns", []
+                )
+
             if "outcome_columns" in self.user_suspicions:
-                additional_columns_to_check.extend(self.user_suspicions.get("outcome_columns", []))
-                
+                additional_columns_to_check.extend(
+                    self.user_suspicions.get("outcome_columns", [])
+                )
+
             # Pass these additional parameters to the sorting anomaly check
             sorting_issues = self.check_sorting_anomalies(
-                id_col, 
-                sort_cols, 
+                id_col,
+                sort_cols,
                 check_dependent_vars=True,
                 prioritize_columns=additional_columns_to_check,
-                prioritize_out_of_order=prioritize_out_of_order
+                prioritize_out_of_order=prioritize_out_of_order,
             )
-            
+
             if sorting_issues:
                 self.findings.append(
                     {"type": "sorting_anomaly", "details": sorting_issues}
@@ -164,61 +210,75 @@ class DataForensics:
         self.detect_inlier_patterns()
 
         return self.findings
-        
-    def analyze_column_unique_values(self, client: Anthropic, columns: Optional[List[str]] = None) -> Dict[str, Any]:
+
+    def analyze_column_unique_values(
+        self, client: Anthropic, columns: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
         """Analyze unique values in each column using Claude.
-        
+
         Args:
             client: Claude API client
             columns: Optional list of columns to analyze. If None, analyze all columns.
-            
+
         Returns:
             Dictionary mapping column names to analysis results
         """
-        if self.df is None:
+        if self.df_pl is None:
             raise ValueError("No dataset loaded. Call analyze_dataset first.")
-            
+
         # Use all columns if none specified
+        available_columns = self.df_pl.columns
         if columns is None:
-            columns = self.df.columns.tolist()
-        elif not all(col in self.df.columns for col in columns):
-            missing = [col for col in columns if col not in self.df.columns]
+            columns = available_columns
+        elif not all(col in available_columns for col in columns):
+            missing = [col for col in columns if col not in available_columns]
             raise ValueError(f"Columns not found in dataset: {missing}")
-            
+
         results = {}
-        
+
         for column in columns:
-            unique_values = self.df[column].unique()
-            
+            # Use Polars to get unique values - much faster than pandas
+            unique_values_pl = self.df_pl.select(pl.col(column)).unique()
+            unique_values = unique_values_pl.to_series().to_numpy()
+            unique_count = len(unique_values)
+
             # Limit to 100 values if there are too many
-            if len(unique_values) > 100:
-                logger.info(f"Column {column} has {len(unique_values)} unique values. Sampling 100 for analysis.")
-                # Take a representative sample including first, last, and random values
-                sampled_values = np.concatenate([
-                    unique_values[:50],  # First 50 values
-                    unique_values[-50:]  # Last 50 values
-                ])
-                values_for_analysis = sampled_values
-                sampling_note = f"NOTE: This column has {len(unique_values)} unique values. Only showing a sample of 100."
+            if unique_count > 100:
+                logger.info(
+                    f"Column {column} has {unique_count} unique values. Sampling 100 for analysis."
+                )
+                # Take a representative sample including first and last values
+                # This is more efficient than concatenating arrays
+                if len(unique_values) > 0:
+                    first_values = unique_values[:50]
+                    last_values = unique_values[-50:]
+                    values_for_analysis = np.concatenate([first_values, last_values])
+                    sampling_note = f"NOTE: This column has {unique_count} unique values. Only showing a sample of 100."
+                else:
+                    values_for_analysis = unique_values
+                    sampling_note = "Column has no values."
             else:
                 values_for_analysis = unique_values
-                sampling_note = f"Complete set of {len(unique_values)} unique values."
-            
+                sampling_note = f"Complete set of {unique_count} unique values."
+
             # Convert to string representations when possible
             values_str = []
             for val in values_for_analysis:
-                if pd.isna(val):
+                if pd.isna(val) or (isinstance(val, float) and np.isnan(val)):
                     values_str.append("NA/NULL")
                 elif isinstance(val, (float, int, str, bool)):
                     values_str.append(str(val))
                 else:
                     values_str.append(repr(val))
-            
+
+            # Get data type using Polars
+            col_dtype = self.df_pl.schema[column]
+
             # Create a prompt for Claude to analyze this column's unique values
             prompt = f"""Analyze the following unique values from the column '{column}' in a research dataset.
 
 Column: {column}
-Data type: {self.df[column].dtype}
+Data type: {col_dtype}
 {sampling_note}
 
 Unique values:
@@ -238,82 +298,117 @@ Be concise but thorough in your analysis. If you don't see any issues, say so.
 Rate the suspiciousness of this column's values on a scale of 1-10, where 10 is highly suspicious.
 Format this exactly as: "SUSPICION_RATING: [1-10]"
 """
-            
+
             try:
                 # Send prompt to Claude for analysis
                 response = client.messages.create(
                     model="claude-3-7-sonnet-latest",
                     max_tokens=1500,
-                    messages=[{"role": "user", "content": prompt}]
+                    messages=[{"role": "user", "content": prompt}],
                 )
-                
+
                 # Extract the response
                 analysis = response.content[0].text
-                
+
                 # Parse the suspicion rating
                 suspicion_rating = None
                 match = re.search(r"SUSPICION_RATING:\s*(\d+)", analysis)
                 if match:
                     suspicion_rating = int(match.group(1))
-                
+
                 results[column] = {
                     "analysis": analysis,
-                    "unique_count": len(unique_values),
+                    "unique_count": unique_count,
                     "suspicion_rating": suspicion_rating,
-                    "sample_analyzed": len(values_for_analysis) < len(unique_values)
+                    "sample_analyzed": len(values_for_analysis) < unique_count,
                 }
-                
+
             except Exception as e:
                 logger.error(f"Error analyzing column {column}: {e}")
-                results[column] = {
-                    "error": str(e),
-                    "unique_count": len(unique_values)
-                }
-                
+                results[column] = {"error": str(e), "unique_count": unique_count}
+
         return results
 
-    def check_sorting_anomalies(self, id_col: str, sort_cols: Union[str, List[str]], 
-                            check_dependent_vars: bool = True,
-                            prioritize_columns: Optional[List[str]] = None,
-                            prioritize_out_of_order: bool = False) -> List[Dict[str, Any]]:
+    def check_sorting_anomalies(
+        self,
+        id_col: str,
+        sort_cols: Union[str, List[str]],
+        check_dependent_vars: bool = True,
+        prioritize_columns: Optional[List[str]] = None,
+        prioritize_out_of_order: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Check for anomalies in sorting order that might indicate manipulation.
-        
+
         Args:
             id_col: Column name for IDs
             sort_cols: Column name(s) for sorting/grouping
             check_dependent_vars: Whether to look for dependent variables that might be sorted
             prioritize_columns: Specific columns to prioritize in the out-of-order analysis
             prioritize_out_of_order: Whether to use more sensitive thresholds for out-of-order detection
-            
+
         Returns:
             List of sorting anomalies found with enhanced out-of-order analysis
         """
+        if self.df_pl is None:
+            raise ValueError("No dataset loaded. Call analyze_dataset first.")
+
         anomalies = []
-        
+
         # Identify potential dependent variables (numeric columns that aren't used for sorting)
         dependent_vars = []
         prioritized_vars = []
-        
+
         if check_dependent_vars:
             sort_cols_list = [sort_cols] if isinstance(sort_cols, str) else sort_cols
-            numeric_cols = self.df.select_dtypes(include=["number"]).columns.tolist()
-            
+
+            # Get numeric columns using Polars
+            numeric_dtypes = [
+                pl.Float32,
+                pl.Float64,
+                pl.Int8,
+                pl.Int16,
+                pl.Int32,
+                pl.Int64,
+                pl.UInt8,
+                pl.UInt16,
+                pl.UInt32,
+                pl.UInt64,
+            ]
+
+            # Find numeric columns
+            schema = self.df_pl.schema
+            numeric_cols = [
+                col_name
+                for col_name, dtype in schema.items()
+                if any(isinstance(dtype, t) for t in numeric_dtypes)
+            ]
+
             # Get all potential dependent variables
-            dependent_vars = [col for col in numeric_cols 
-                             if col != id_col and col not in sort_cols_list]
-            
+            dependent_vars = [
+                col
+                for col in numeric_cols
+                if col != id_col and col not in sort_cols_list
+            ]
+
             # If user provided specific columns to prioritize, check those first
             if prioritize_columns:
                 # Filter to ensure we only include columns that exist and are numeric
-                prioritized_vars = [col for col in prioritize_columns 
-                                  if col in self.df.columns and col in numeric_cols
-                                  and col != id_col and col not in sort_cols_list]
-                
+                available_columns = self.df_pl.columns
+                prioritized_vars = [
+                    col
+                    for col in prioritize_columns
+                    if col in available_columns
+                    and col in numeric_cols
+                    and col != id_col
+                    and col not in sort_cols_list
+                ]
+
                 # If we're prioritizing, put these columns at the front of the list
-                # We'll still check all columns, but prioritized ones first
                 if prioritized_vars:
                     # Remove prioritized vars from dependent_vars to avoid duplicates
-                    dependent_vars = [col for col in dependent_vars if col not in prioritized_vars]
+                    dependent_vars = [
+                        col for col in dependent_vars if col not in prioritized_vars
+                    ]
                     # Combine lists with prioritized vars first
                     dependent_vars = prioritized_vars + dependent_vars
 
@@ -321,68 +416,102 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
         if isinstance(sort_cols, str):
             sort_cols = [sort_cols]
 
-        # Get the unique values for each sort column
+        # Process each sort column - this is significantly faster with Polars
         for col in sort_cols:
-            unique_vals = self.df[col].unique()
+            # Get unique values efficiently with Polars
+            unique_vals = self.df_pl.select(pl.col(col)).unique().to_series().to_list()
 
             for val in unique_vals:
-                # Get rows for this value
-                subset = self.df[self.df[col] == val]
+                # Get rows for this value using Polars filter
+                subset_pl = self.df_pl.filter(pl.col(col) == val)
 
-                # Check if IDs are in sequence
-                ids = subset[id_col].values
+                # Add row indices for better tracking
+                subset_pl = subset_pl.with_row_count("_row_idx")
+
+                # Sort by ID to make it easier to find anomalies
+                sorted_subset = subset_pl.sort(id_col)
+
+                # Get the ID and row index columns
+                id_vals = sorted_subset.select([id_col, "_row_idx"]).to_pandas()
 
                 # Find out-of-sequence IDs
-                for i in range(1, len(ids)):
-                    if ids[i] < ids[i - 1]:
-                        # Found an out-of-sequence ID
-                        row_idx = subset.iloc[i].name
-                        
+                if len(id_vals) > 1:
+                    # Calculate differences between consecutive IDs
+                    id_vals["id_diff"] = id_vals[id_col].diff()
+
+                    # Negative diffs indicate out-of-sequence IDs
+                    anomaly_rows = id_vals[id_vals["id_diff"] < 0]
+
+                    for _, row in anomaly_rows.iterrows():
+                        row_idx = int(row["_row_idx"])
+                        current_id = row[id_col]
+
+                        # Get previous ID value
+                        prev_idx = id_vals.index[id_vals.index.get_loc(row.name) - 1]
+                        prev_id = id_vals.loc[prev_idx, id_col]
+
+                        # Convert to int if it's an integer type
+                        if isinstance(current_id, (int, np.integer)):
+                            current_id = int(current_id)
+                        if isinstance(prev_id, (int, np.integer)):
+                            prev_id = int(prev_id)
+
                         # Basic anomaly info
                         anomaly = {
-                            "row_index": int(row_idx),
-                            "id": int(ids[i])
-                            if pd.api.types.is_integer_dtype(type(ids[i]))
-                            else ids[i],
-                            "previous_id": int(ids[i - 1])
-                            if pd.api.types.is_integer_dtype(type(ids[i - 1]))
-                            else ids[i - 1],
+                            "row_index": row_idx,
+                            "id": current_id,
+                            "previous_id": prev_id,
                             "sort_column": col,
-                            "sort_value": val
-                            if not pd.api.types.is_integer_dtype(type(val))
-                            else int(val),
+                            "sort_value": int(val)
+                            if isinstance(val, (int, np.integer))
+                            else val,
                         }
-                        
+
+                        # Convert subset_pl to pandas DataFrame for compatibility with existing analysis function
+                        # In the future, this function could be rewritten to use Polars as well
+                        subset_pd = subset_pl.to_pandas()
+
                         # Check if dependent variables also follow an unusual pattern within this group
                         if dependent_vars:
-                            out_of_order_analysis = self._analyze_out_of_order_dependent_vars(
-                                subset, row_idx, dependent_vars,
-                                prioritize_out_of_order=prioritize_out_of_order,
-                                prioritized_columns=prioritized_vars if prioritized_vars else None
+                            # Use the original analysis function which works with pandas DataFrame
+                            out_of_order_analysis = (
+                                self._analyze_out_of_order_dependent_vars(
+                                    subset_pd,
+                                    row_idx,
+                                    dependent_vars,
+                                    prioritize_out_of_order=prioritize_out_of_order,
+                                    prioritized_columns=prioritized_vars
+                                    if prioritized_vars
+                                    else None,
+                                )
                             )
                             if out_of_order_analysis:
                                 anomaly["out_of_order_analysis"] = out_of_order_analysis
-                                
+
                         anomalies.append(anomaly)
 
         return anomalies
-        
-    def _analyze_out_of_order_dependent_vars(self, subset: pd.DataFrame, row_idx: int, 
-                                           dependent_vars: List[str],
-                                           prioritize_out_of_order: bool = False,
-                                           prioritized_columns: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+
+    def _analyze_out_of_order_dependent_vars(
+        self,
+        subset: pd.DataFrame,
+        row_idx: int,
+        dependent_vars: List[str],
+        prioritize_out_of_order: bool = False,
+        prioritized_columns: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Analyzes potential out-of-order observations for dependent variables.
-        
+
         This looks for values in dependent variables that break a strong sorting pattern,
         which could indicate manual manipulation of values to achieve desired results.
-        
+
         Args:
             subset: DataFrame subset for the current group
             row_idx: Index of the row that's out of order
             dependent_vars: List of potential dependent variables to check
             prioritize_out_of_order: Whether to use more sensitive thresholds for detecting out-of-order patterns
             prioritized_columns: Specific columns to prioritize and analyze more thoroughly
-            
+
         Returns:
             Dict with out-of-order analysis if found, None otherwise
         """
@@ -391,222 +520,286 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
         min_rows = 3 if prioritize_out_of_order else 5
         if len(subset) < min_rows:
             return None
-            
+
         # Get the row that's out of order
         row_position = subset.index.get_loc(row_idx)
-        
+
         # Check each dependent variable - prioritize the ones specified by the user
         for var in dependent_vars:
             # Skip if the column doesn't have numeric values
             if not pd.api.types.is_numeric_dtype(subset[var]):
                 continue
-                
+
             # Is this a prioritized column?
             is_priority_column = prioritized_columns and var in prioritized_columns
-            
+
             # Create a series with all values for this variable
             values = subset[var].copy()
-            
+
             # Adjust tolerance based on whether this is a priority column
             # For priority columns or when prioritizing out-of-order detection,
             # we're more lenient in determining if a pattern exists
             if prioritize_out_of_order or is_priority_column:
                 # For prioritized analysis, allow a small percentage of exceptions
-                allowed_exceptions = max(1, int(len(values) * 0.1))  # Allow up to 10% exceptions
-                
+                allowed_exceptions = max(
+                    1, int(len(values) * 0.1)
+                )  # Allow up to 10% exceptions
+
                 # Check if variable is mostly sorted (with some tolerance)
-                exceptions_asc = sum(1 for i in range(len(values)-1) 
-                                  if values.iloc[i] > values.iloc[i+1] and 
-                                  i != row_position-1 and i != row_position)
-                
-                exceptions_desc = sum(1 for i in range(len(values)-1) 
-                                   if values.iloc[i] < values.iloc[i+1] and
-                                   i != row_position-1 and i != row_position)
-                                   
+                exceptions_asc = sum(
+                    1
+                    for i in range(len(values) - 1)
+                    if values.iloc[i] > values.iloc[i + 1]
+                    and i != row_position - 1
+                    and i != row_position
+                )
+
+                exceptions_desc = sum(
+                    1
+                    for i in range(len(values) - 1)
+                    if values.iloc[i] < values.iloc[i + 1]
+                    and i != row_position - 1
+                    and i != row_position
+                )
+
                 is_sorted_asc = exceptions_asc <= allowed_exceptions
                 is_sorted_desc = exceptions_desc <= allowed_exceptions
             else:
                 # Standard strict check - must be perfectly sorted
-                is_sorted_asc = all(values.iloc[i] <= values.iloc[i+1] for i in range(len(values)-1) 
-                                  if i != row_position-1 and i != row_position)
-                is_sorted_desc = all(values.iloc[i] >= values.iloc[i+1] for i in range(len(values)-1)
-                                   if i != row_position-1 and i != row_position)
-            
+                is_sorted_asc = all(
+                    values.iloc[i] <= values.iloc[i + 1]
+                    for i in range(len(values) - 1)
+                    if i != row_position - 1 and i != row_position
+                )
+                is_sorted_desc = all(
+                    values.iloc[i] >= values.iloc[i + 1]
+                    for i in range(len(values) - 1)
+                    if i != row_position - 1 and i != row_position
+                )
+
             # If values are sorted except around our anomalous row, this is suspicious
             if is_sorted_asc or is_sorted_desc:
                 # Get the current value
                 current_value = values.iloc[row_position]
-                
+
                 # Figure out what the value should be to maintain the pattern
                 if row_position > 0 and row_position < len(values) - 1:
                     prev_value = values.iloc[row_position - 1]
                     next_value = values.iloc[row_position + 1]
-                    
+
                     # For ascending pattern
                     if is_sorted_asc:
                         # Value should be between prev and next in sorted order
                         if current_value > next_value or current_value < prev_value:
                             likely_original = (prev_value + next_value) / 2
-                            
+
                             # Calculate statistical impact - does this anomaly create/strengthen a correlation?
                             # Get the mean for this variable when grouped by a boolean representation of the sorting column
-                            variable_difference = self._calculate_statistical_impact(subset, var, current_value, likely_original)
-                            
+                            variable_difference = self._calculate_statistical_impact(
+                                subset, var, current_value, likely_original
+                            )
+
                             return {
                                 "sorted_by": [var],
                                 "breaking_pattern": f"value {current_value} breaks ascending pattern",
-                                "imputed_original_values": [{
-                                    "row_index": int(row_idx),
-                                    "column": var,
-                                    "current": float(current_value),
-                                    "likely_original": float(likely_original)
-                                }],
-                                "statistical_impact": variable_difference
+                                "imputed_original_values": [
+                                    {
+                                        "row_index": int(row_idx),
+                                        "column": var,
+                                        "current": float(current_value),
+                                        "likely_original": float(likely_original),
+                                    }
+                                ],
+                                "statistical_impact": variable_difference,
                             }
-                    
+
                     # For descending pattern
                     elif is_sorted_desc:
                         # Value should be between prev and next in sorted order
                         if current_value < next_value or current_value > prev_value:
                             likely_original = (prev_value + next_value) / 2
-                            
+
                             # Calculate statistical impact
-                            variable_difference = self._calculate_statistical_impact(subset, var, current_value, likely_original)
-                            
+                            variable_difference = self._calculate_statistical_impact(
+                                subset, var, current_value, likely_original
+                            )
+
                             return {
                                 "sorted_by": [var],
                                 "breaking_pattern": f"value {current_value} breaks descending pattern",
-                                "imputed_original_values": [{
-                                    "row_index": int(row_idx),
-                                    "column": var,
-                                    "current": float(current_value),
-                                    "likely_original": float(likely_original)
-                                }],
-                                "statistical_impact": variable_difference
+                                "imputed_original_values": [
+                                    {
+                                        "row_index": int(row_idx),
+                                        "column": var,
+                                        "current": float(current_value),
+                                        "likely_original": float(likely_original),
+                                    }
+                                ],
+                                "statistical_impact": variable_difference,
                             }
-        
+
         # No patterns found
         return None
-        
-    def _calculate_statistical_impact(self, subset: pd.DataFrame, var: str, 
-                                    current_value: float, likely_original: float) -> str:
+
+    def _calculate_statistical_impact(
+        self,
+        subset: pd.DataFrame,
+        var: str,
+        current_value: float,
+        likely_original: float,
+    ) -> str:
         """Calculate the statistical impact of an out-of-order value.
-        
+
         Args:
             subset: DataFrame subset for the current group
             var: Variable name
             current_value: Current value in the dataset
             likely_original: Likely original value before manipulation
-            
+
         Returns:
             String describing the statistical impact
         """
         try:
             # Make a copy to avoid modifying the original data
             subset_copy = subset.copy()
-            
+
             # Find the row with the current value
             row_with_value = subset_copy[subset_copy[var] == current_value]
-            
+
             # If we don't find the row, we can't calculate impact
             if len(row_with_value) == 0:
                 return "Impact cannot be calculated"
-                
+
             # Get original mean and standard deviation
             original_mean = subset_copy[var].mean()
             original_std = subset_copy[var].std()
-            
+
             # Identify a categorical column that might be a treatment indicator
-            categorical_cols = subset_copy.select_dtypes(include=["object", "category"]).columns.tolist()
-            
+            categorical_cols = subset_copy.select_dtypes(
+                include=["object", "category"]
+            ).columns.tolist()
+
             # Also include binary numeric columns (0/1)
             for col in subset_copy.select_dtypes(include=["number"]).columns:
                 if set(subset_copy[col].unique()).issubset({0, 1}):
                     categorical_cols.append(col)
-            
+
             # If we don't have any treatment indicators, just report the impact on mean
             if not categorical_cols:
                 # Replace the value
                 row_idx = row_with_value.index[0]
                 subset_copy.at[row_idx, var] = likely_original
-                
+
                 # Calculate new statistics
                 new_mean = subset_copy[var].mean()
                 new_std = subset_copy[var].std()
-                
+
                 mean_change = ((new_mean - original_mean) / original_mean) * 100
                 std_change = ((new_std - original_std) / original_std) * 100
-                
-                return f"Mean would change by {mean_change:.1f}%, SD by {std_change:.1f}%"
-            
+
+                return (
+                    f"Mean would change by {mean_change:.1f}%, SD by {std_change:.1f}%"
+                )
+
             # Try each categorical column as a potential treatment indicator
             impacts = []
             for cat_col in categorical_cols:
                 if subset_copy[cat_col].nunique() != 2:
                     continue
-                    
+
                 # Get the two groups
-                groups = subset_copy[cat_col].unique()
-                
+                subset_copy[cat_col].unique()
+
                 # Calculate original difference between groups
                 group_means = subset_copy.groupby(cat_col)[var].mean()
                 original_diff = abs(group_means.max() - group_means.min())
-                
+
                 # Replace the value
                 row_idx = row_with_value.index[0]
-                treatment_group = subset_copy.loc[row_idx, cat_col]
+                subset_copy.loc[row_idx, cat_col]
                 subset_copy.at[row_idx, var] = likely_original
-                
+
                 # Calculate new difference
                 new_group_means = subset_copy.groupby(cat_col)[var].mean()
                 new_diff = abs(new_group_means.max() - new_group_means.min())
-                
+
                 # Calculate percent change in difference
                 if original_diff > 0:
                     pct_change = ((original_diff - new_diff) / original_diff) * 100
-                    impacts.append(f"Difference between groups in {cat_col} would decrease by {pct_change:.1f}%")
-            
+                    impacts.append(
+                        f"Difference between groups in {cat_col} would decrease by {pct_change:.1f}%"
+                    )
+
             if impacts:
                 return "; ".join(impacts)
             else:
                 return "No significant impact on group differences"
-                
+
         except Exception as e:
             return f"Error calculating impact: {str(e)}"
 
     def check_duplicate_ids(self, id_col: str) -> List[Dict[str, Any]]:
         """Check for duplicate ID values that might indicate manipulation.
-        
+
         Args:
             id_col: Column name for IDs
-            
+
         Returns:
             List of duplicate ID findings
         """
-        id_counts = self.df[id_col].value_counts()
-        duplicates = id_counts[id_counts > 1].index.tolist()
+        # Use Polars for much faster duplicate detection
+        if self.df_pl is None:
+            raise ValueError("No dataset loaded")
+
+        # Group by ID and count occurrences
+        counts = (
+            self.df_pl.select(pl.col(id_col))
+            .group_by(id_col)
+            .agg(pl.count().alias("count"))
+            .filter(pl.col("count") > 1)
+            .sort("count", descending=True)
+        )
 
         duplicate_details = []
-        for dup_id in duplicates:
-            rows = self.df[self.df[id_col] == dup_id]
+
+        # For each duplicate ID, get details
+        for row in counts.iter_rows(named=True):
+            dup_id = row[id_col]
+            count = row["count"]
+
+            # Find row indices with this duplicate ID
+            # Convert to integers list for serialization
+            rows_df = self.df_pl.filter(pl.col(id_col) == dup_id)
+            try:
+                # For Polars >= 0.19.0
+                row_indices = [int(idx) for idx in rows_df.row_nums()]
+            except AttributeError:
+                # Fallback for older Polars versions
+                # Create a temporary dataframe with row indices
+                temp_df = self.df_pl.with_row_count("_row_idx")
+                filtered = temp_df.filter(pl.col(id_col) == dup_id)
+                row_indices = [
+                    int(idx) for idx in filtered.select("_row_idx").to_series()
+                ]
+
+            # Convert ID to int if it looks like an integer
+            if isinstance(dup_id, (int, np.integer)):
+                dup_id = int(dup_id)
+
             duplicate_details.append(
-                {
-                    "id": int(dup_id)
-                    if pd.api.types.is_integer_dtype(type(dup_id))
-                    else dup_id,
-                    "count": len(rows),
-                    "row_indices": [int(idx) for idx in rows.index.tolist()],
-                }
+                {"id": dup_id, "count": int(count), "row_indices": row_indices}
             )
 
         return duplicate_details
 
-    def extract_excel_metadata(self, excel_file: str) -> Dict[str, List[Dict[str, Any]]]:
+    def extract_excel_metadata(
+        self, excel_file: str
+    ) -> Dict[str, List[Dict[str, Any]]]:
         """Extract metadata from Excel file including calcChain information.
-        
+
         Args:
             excel_file: Path to the Excel file
-            
+
         Returns:
             Dict[str, List[Dict[str, Any]]]: Metadata extracted from the Excel file
         """
@@ -641,10 +834,10 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
 
     def analyze_calc_chain(self, suspect_rows: List[int]) -> List[Dict[str, Any]]:
         """Analyze the calcChain to detect row movement.
-        
+
         Args:
             suspect_rows: List of row indices to check for movement evidence
-            
+
         Returns:
             List[Dict[str, Any]]: Findings about row movements
         """
@@ -698,7 +891,7 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
 
     def analyze_statistical_anomalies(self) -> None:
         """Look for statistical anomalies in the data.
-        
+
         Identifies outliers in numeric columns and adds findings to self.findings.
         """
         # If there are fewer than 5 columns, skip this analysis
@@ -742,15 +935,16 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
                     plt.close()
                     self.plots.append({"column": col, "plot_path": tmp.name})
 
-    def analyze_suspicious_observations(self, suspicious_rows: List[int], group_col: str, 
-                                  outcome_vars: List[str]) -> Dict[str, Any]:
+    def analyze_suspicious_observations(
+        self, suspicious_rows: List[int], group_col: str, outcome_vars: List[str]
+    ) -> Dict[str, Any]:
         """Analyze whether suspicious observations show a strong effect in the expected direction.
-        
+
         Args:
             suspicious_rows: List of row indices considered suspicious
             group_col: Column name for grouping/conditions
             outcome_vars: List of outcome variable column names
-            
+
         Returns:
             Dict[str, Any]: Analysis results for each outcome variable
         """
@@ -860,7 +1054,7 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
         - Lack of expected natural distributions
         - Strong linear progressions
         - Idiosyncratic response clusters (e.g., identical wrong answers)
-        
+
         Adds findings to self.findings if fabrication patterns are detected.
         """
         # Analyze both numeric and categorical columns
@@ -1067,7 +1261,7 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
                         {
                             "column": col,
                             "issue": "idiosyncratic_clusters",
-                            "details": f"Found unusual clusters of identical responses",
+                            "details": "Found unusual clusters of identical responses",
                             "unusual_values": unusual_values,
                         }
                     )
@@ -1085,7 +1279,7 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
 
     def create_digit_distribution_plot(self, columns: List[str]) -> None:
         """Create plot showing distribution of last digits for each column.
-        
+
         Args:
             columns: List of column names to analyze for digit distribution
         """
@@ -1170,7 +1364,7 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
 
         In naturally occurring numerical data, terminal digits should follow a uniform distribution.
         Data manipulation or fabrication often results in non-uniform distribution of terminal digits.
-        
+
         Adds findings to self.findings if anomalies are detected.
         """
         # Focus on numeric columns
@@ -1262,7 +1456,7 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
 
     def create_terminal_digit_plot(self, anomalies: List[Dict[str, Any]]) -> None:
         """Create visualization of anomalous terminal digit distributions.
-        
+
         Args:
             anomalies: List of anomaly dictionaries containing terminal digit findings
         """
@@ -1354,10 +1548,10 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
 
         This can indicate data manipulation where some groups have had their
         values adjusted to produce a desired effect.
-        
+
         Args:
             group_col: Column name for grouping/condition variable
-            
+
         Adds findings to self.findings if anomalies are detected.
         """
         # Check if group column exists
@@ -1437,9 +1631,11 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
             # Create visualization
             self.create_variance_comparison_plot(anomalies, group_col)
 
-    def create_variance_comparison_plot(self, anomalies: List[Dict[str, Any]], group_col: str) -> None:
+    def create_variance_comparison_plot(
+        self, anomalies: List[Dict[str, Any]], group_col: str
+    ) -> None:
         """Create plots comparing distributions across groups with variance anomalies.
-        
+
         Args:
             anomalies: List of anomaly dictionaries containing variance findings
             group_col: Column name for grouping variable
@@ -1492,7 +1688,7 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
 
         In fabricated data, values are often created to be close to desired
         means, resulting in an unusual lack of outliers and too many "inliers".
-        
+
         Adds findings to self.findings if anomalies are detected.
         """
         # Get numeric columns for analysis
@@ -1559,7 +1755,7 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
 
     def create_inlier_distribution_plot(self, anomalies: List[Dict[str, Any]]) -> None:
         """Create distribution plots for columns with inlier anomalies.
-        
+
         Args:
             anomalies: List of anomaly dictionaries containing inlier pattern findings
         """
@@ -1633,8 +1829,12 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
             plt.close()
             self.plots.append({"column": "inlier_distribution", "plot_path": tmp.name})
 
-    def segment_and_analyze_with_claude(self, client: Anthropic, max_rows_per_chunk: int = 300,
-                                 user_suspicions: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    def segment_and_analyze_with_claude(
+        self,
+        client: Anthropic,
+        max_rows_per_chunk: int = 300,
+        user_suspicions: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Segment dataset into manageable chunks and use Claude to detect anomalies in each chunk.
 
@@ -1645,20 +1845,35 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
                             but not bias the results excessively
 
         Returns:
-            List[Dict[str, Any]]: A list of findings from Claude's analysis, 
+            List[Dict[str, Any]]: A list of findings from Claude's analysis,
             each finding is a dictionary that may contain anomaly results or error information
         """
         # If user_suspicions is not provided, use the one initialized in analyze_dataset
         if user_suspicions is None and hasattr(self, "user_suspicions"):
             user_suspicions = self.user_suspicions
         if not hasattr(self, "df"):
-            return [{"error": "DataFrame not initialized in DataForensics object", "hint": "Make sure to set forensics.df before calling this method"}]
-            
+            return [
+                {
+                    "error": "DataFrame not initialized in DataForensics object",
+                    "hint": "Make sure to set forensics.df before calling this method",
+                }
+            ]
+
         if self.df is None:
-            return [{"error": "DataFrame is None in DataForensics object", "hint": "Make sure forensics.df is assigned a valid DataFrame"}]
-            
+            return [
+                {
+                    "error": "DataFrame is None in DataForensics object",
+                    "hint": "Make sure forensics.df is assigned a valid DataFrame",
+                }
+            ]
+
         if len(self.df) == 0:
-            return [{"error": "DataFrame is empty (0 rows)", "hint": "The dataset must contain at least one row of data"}]
+            return [
+                {
+                    "error": "DataFrame is empty (0 rows)",
+                    "hint": "The dataset must contain at least one row of data",
+                }
+            ]
 
         claude_findings: List[Dict[str, Any]] = []
 
@@ -1747,67 +1962,101 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
             for col in clean_chunk_df.columns:
                 if pd.api.types.is_numeric_dtype(clean_chunk_df[col]):
                     # Replace NaN, Inf, -Inf with null for JSON compatibility
-                    clean_chunk_df[col] = clean_chunk_df[col].replace([np.inf, -np.inf, np.nan], None)
-            
+                    clean_chunk_df[col] = clean_chunk_df[col].replace(
+                        [np.inf, -np.inf, np.nan], None
+                    )
+
             # Ensure both numeric and categorical stats don't have NaN or infinity values
             for col, stats in numeric_stats.items():
                 for key, value in stats.items():
-                    if isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
+                    if isinstance(value, float) and (
+                        np.isnan(value) or np.isinf(value)
+                    ):
                         numeric_stats[col][key] = None
-            
+
             # Convert the dataframe to string with error handling
             try:
                 df_string = clean_chunk_df.to_string()
                 # Truncate if too large (to avoid token limits)
                 if len(df_string) > 200000:  # ~200KB should be safe
-                    logger.warning(f"Chunk {i+1} data too large, truncating for Claude analysis")
+                    logger.warning(
+                        f"Chunk {i + 1} data too large, truncating for Claude analysis"
+                    )
                     df_string = df_string[:200000] + "\n[... truncated ...]"
             except Exception as df_err:
                 logger.error(f"Error converting dataframe to string: {df_err}")
                 df_string = f"[Error rendering dataframe: {df_err}]"
-            
+
             # Create prompt for Claude
             # Prepare section for user suspicions if provided
             user_suspicion_section = ""
             if user_suspicions and isinstance(user_suspicions, dict):
                 # Format the user suspicions in a helpful way, but emphasize being objective
                 user_suspicion_section = "\nUser has raised the following areas to explore (analyze these objectively, but do not let these suggestions bias your findings):\n"
-                
+
                 if "description" in user_suspicions and user_suspicions["description"]:
-                    user_suspicion_section += f"- Description: {user_suspicions['description']}\n"
-                
-                if "focus_columns" in user_suspicions and user_suspicions["focus_columns"]:
+                    user_suspicion_section += (
+                        f"- Description: {user_suspicions['description']}\n"
+                    )
+
+                if (
+                    "focus_columns" in user_suspicions
+                    and user_suspicions["focus_columns"]
+                ):
                     focus_cols = ", ".join(user_suspicions["focus_columns"])
                     user_suspicion_section += f"- Columns of interest: {focus_cols}\n"
-                    
-                if "potential_issues" in user_suspicions and user_suspicions["potential_issues"]:
+
+                if (
+                    "potential_issues" in user_suspicions
+                    and user_suspicions["potential_issues"]
+                ):
                     issues = ", ".join(user_suspicions["potential_issues"])
                     user_suspicion_section += f"- Potential issues to check: {issues}\n"
-                    
-                if "treatment_columns" in user_suspicions and user_suspicions["treatment_columns"]:
+
+                if (
+                    "treatment_columns" in user_suspicions
+                    and user_suspicions["treatment_columns"]
+                ):
                     treatment_cols = ", ".join(user_suspicions["treatment_columns"])
-                    user_suspicion_section += f"- Potential treatment indicators: {treatment_cols}\n"
-                    
-                if "outcome_columns" in user_suspicions and user_suspicions["outcome_columns"]:
+                    user_suspicion_section += (
+                        f"- Potential treatment indicators: {treatment_cols}\n"
+                    )
+
+                if (
+                    "outcome_columns" in user_suspicions
+                    and user_suspicions["outcome_columns"]
+                ):
                     outcome_cols = ", ".join(user_suspicions["outcome_columns"])
                     user_suspicion_section += f"- Outcome variables: {outcome_cols}\n"
-                    
-                if "suspicious_rows" in user_suspicions and user_suspicions["suspicious_rows"]:
+
+                if (
+                    "suspicious_rows" in user_suspicions
+                    and user_suspicions["suspicious_rows"]
+                ):
                     # Format row ranges for readability
                     rows = [str(r) for r in user_suspicions["suspicious_rows"]]
                     if len(rows) > 10:
-                        rows_str = f"{', '.join(rows[:10])}... (and {len(rows)-10} more)"
+                        rows_str = (
+                            f"{', '.join(rows[:10])}... (and {len(rows) - 10} more)"
+                        )
                     else:
                         rows_str = ", ".join(rows)
-                    user_suspicion_section += f"- Specific rows to examine: {rows_str}\n"
-                
-                if "suspect_grouping" in user_suspicions and user_suspicions["suspect_grouping"]:
+                    user_suspicion_section += (
+                        f"- Specific rows to examine: {rows_str}\n"
+                    )
+
+                if (
+                    "suspect_grouping" in user_suspicions
+                    and user_suspicions["suspect_grouping"]
+                ):
                     user_suspicion_section += f"- Check for group-based patterns using: {user_suspicions['suspect_grouping']}\n"
-                    
+
                 # Add important note to avoid bias
                 user_suspicion_section += "\nIMPORTANT: While considering these areas, maintain objectivity and report what the data actually shows, not what is expected. Do not let these suggestions narrow your analysis or bias your findings. Thoroughly analyze all patterns in the data.\n"
-            
-            prompt = f"""Analyze this dataset chunk for potential data manipulation or anomalies.{user_suspicion_section}
+
+            prompt = f"""Analyze this dataset chunk for potential data manipulation or anomalies.{
+                user_suspicion_section
+            }
 
 Dataset Information:
 - Rows: {len(chunk_df)} (from row {start_idx} to {end_idx - 1} in the original dataset)
@@ -1890,21 +2139,27 @@ Return your findings in the following JSON format (ONLY respond with valid JSON)
                 content: str = response.content[0].text
                 json_start: int = content.find("{")
                 json_end: int = content.rfind("}") + 1
-                
+
                 # Check if we actually found valid JSON markers
                 if json_start == -1 or json_end <= json_start:
-                    logger.error(f"Could not find valid JSON markers in Claude's response for chunk {i+1}")
+                    logger.error(
+                        f"Could not find valid JSON markers in Claude's response for chunk {i + 1}"
+                    )
                     logger.error(f"Claude response: {content[:200]}...")
-                    
+
                     # Create an error finding
-                    claude_findings.append({
-                        "error": "Invalid JSON format in Claude response",
-                        "chunk": i + 1,
-                        "rows": f"{start_idx}-{end_idx - 1}",
-                        "raw_response": content[:500] if len(content) > 500 else content
-                    })
+                    claude_findings.append(
+                        {
+                            "error": "Invalid JSON format in Claude response",
+                            "chunk": i + 1,
+                            "rows": f"{start_idx}-{end_idx - 1}",
+                            "raw_response": content[:500]
+                            if len(content) > 500
+                            else content,
+                        }
+                    )
                     continue  # Skip to next chunk
-                
+
                 json_str: str = content[json_start:json_end]
 
                 # Handle JSON parsing with error checking
@@ -1929,18 +2184,18 @@ Return your findings in the following JSON format (ONLY respond with valid JSON)
                         for finding in chunk_findings["findings"]:
                             # Add chunk number reference
                             finding["chunk"] = i + 1
-                            
+
                             # Update row indices with offsets
                             if "row_indices" in finding:
                                 try:
                                     # Convert and normalize row_indices
                                     # Could be a list of integers, a list of strings, or a single value
                                     row_indices = finding["row_indices"]
-                                    
+
                                     # If it's not a list, convert it to one
                                     if not isinstance(row_indices, list):
                                         row_indices = [row_indices]
-                                    
+
                                     # Convert all indices to integers, then add offset
                                     finding["row_indices"] = []
                                     for idx in row_indices:
@@ -1949,16 +2204,22 @@ Return your findings in the following JSON format (ONLY respond with valid JSON)
                                                 # Try to convert string to int
                                                 idx = int(idx)
                                             # Add the offset to translate to original dataset
-                                            finding["row_indices"].append(start_idx + idx)
+                                            finding["row_indices"].append(
+                                                start_idx + idx
+                                            )
                                         except (ValueError, TypeError) as e:
                                             # If a specific index can't be converted, log the error but continue processing
-                                            logger.warning(f"Could not process row index '{idx}': {e}")
-                                            
+                                            logger.warning(
+                                                f"Could not process row index '{idx}': {e}"
+                                            )
+
                                 except Exception as e:
                                     # Log error but preserve the finding
                                     logger.error(f"Error updating row indices: {e}")
                                     # Add a diagnostic field
-                                    finding["row_indices_error"] = f"Original format could not be processed: {str(e)}"
+                                    finding["row_indices_error"] = (
+                                        f"Original format could not be processed: {str(e)}"
+                                    )
 
                     # Safety check before adding to findings - we should already have a dict here, but double-check
                     if isinstance(chunk_findings, dict):
@@ -2003,30 +2264,32 @@ Return your findings in the following JSON format (ONLY respond with valid JSON)
                     error_details = traceback.format_exc()
                     logger.error(f"JSON parse error in chunk {i + 1}: {e}")
                     logger.error(f"Error details: {error_details}")
-                    
+
                     # More comprehensive error analysis
-                    json_error_position = e.pos if hasattr(e, 'pos') else -1
-                    json_context = ''
+                    json_error_position = e.pos if hasattr(e, "pos") else -1
+                    json_context = ""
                     if json_error_position > 0 and json_error_position < len(json_str):
                         start_pos = max(0, json_error_position - 20)
                         end_pos = min(len(json_str), json_error_position + 20)
-                        error_marker = '→ERROR→'
+                        error_marker = "→ERROR→"
                         json_context = (
-                            json_str[start_pos:json_error_position] + 
-                            error_marker + 
-                            json_str[json_error_position:end_pos]
+                            json_str[start_pos:json_error_position]
+                            + error_marker
+                            + json_str[json_error_position:end_pos]
                         )
-                        
+
                     logger.error(f"JSON error context: {json_context}")
                     logger.error(f"Problematic JSON string: {json_str[:200]}...")
-                    
+
                     chunk_findings = {
                         "error": f"JSON parse error: {str(e)}",
                         "chunk": i + 1,
                         "rows": f"{start_idx}-{end_idx - 1}",
-                        "json_start": json_str[:200] if len(json_str) > 200 else json_str,
+                        "json_start": json_str[:200]
+                        if len(json_str) > 200
+                        else json_str,
                         "json_error_position": json_error_position,
-                        "json_context": json_context
+                        "json_context": json_context,
                     }
                     claude_findings.append(chunk_findings)
 
@@ -2034,62 +2297,84 @@ Return your findings in the following JSON format (ONLY respond with valid JSON)
                 error_details = traceback.format_exc()
                 logger.error(f"Failed processing chunk {i + 1}: {e}")
                 logger.error(f"Error details: {error_details}")
-                
+
                 # Try to determine if it was a Claude API error or another type
-                error_type = "API" if "anthropic" in str(e).lower() or "claude" in str(e).lower() else "Processing"
+                error_type = (
+                    "API"
+                    if "anthropic" in str(e).lower() or "claude" in str(e).lower()
+                    else "Processing"
+                )
                 error_hint = ""
-                
+
                 # Specific handling for common error types
-                if "context window" in str(e).lower() or "token limit" in str(e).lower():
+                if (
+                    "context window" in str(e).lower()
+                    or "token limit" in str(e).lower()
+                ):
                     error_hint = "The data chunk may be too large to process. Try reducing max_rows_per_chunk."
                 elif "rate limit" in str(e).lower():
                     error_hint = "API rate limit exceeded. Try again after waiting a few minutes."
                 elif "timeout" in str(e).lower():
-                    error_hint = "Request timed out. The API may be experiencing high load."
-                
+                    error_hint = (
+                        "Request timed out. The API may be experiencing high load."
+                    )
+
                 error_data = {
                     "error": f"{error_type} error: {str(e)}",
                     "hint": error_hint,
-                    "traceback": error_details[:500],  # Include part of traceback but not too long
+                    "traceback": error_details[
+                        :500
+                    ],  # Include part of traceback but not too long
                     "chunk": i + 1,
                     "rows": f"{start_idx}-{end_idx - 1}",
                     "rows_count": end_idx - start_idx,
                     # Include information on chunk size to help diagnose if the chunk is too large
-                    "chunk_size_bytes": len(chunk_df.to_string()) if 'chunk_df' in locals() else -1
+                    "chunk_size_bytes": len(chunk_df.to_string())
+                    if "chunk_df" in locals()
+                    else -1,
                 }
                 claude_findings.append(error_data)
 
         return claude_findings
 
-    def compare_with_without_suspicious_rows(self, suspicious_rows: List[int], 
-                                      group_column: Optional[str] = None,
-                                      outcome_columns: Optional[List[str]] = None) -> Dict[str, Any]:
+    def compare_with_without_suspicious_rows(
+        self,
+        suspicious_rows: List[int],
+        group_column: Optional[str] = None,
+        outcome_columns: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         """
         Compare analysis results with and without suspicious rows to see how they impact the results.
-        
+
         Args:
             suspicious_rows: List of row indices considered suspicious
             group_column: Name of the column containing group/treatment information
             outcome_columns: Names of outcome/dependent variable columns to analyze
-            
+
         Returns:
             Dict[str, Any]: Dictionary containing comparison results
         """
         if not hasattr(self, "df") or self.df is None:
-            return {"error": "DataFrame not initialized or is None", 
-                    "hint": "Make sure to set forensics.df before calling this method"}
-            
+            return {
+                "error": "DataFrame not initialized or is None",
+                "hint": "Make sure to set forensics.df before calling this method",
+            }
+
         if len(suspicious_rows) == 0:
-            return {"error": "No suspicious rows provided", 
-                   "hint": "Provide a list of row indices to compare"}
-        
+            return {
+                "error": "No suspicious rows provided",
+                "hint": "Provide a list of row indices to compare",
+            }
+
         if len(self.df) == 0:
-            return {"error": "DataFrame is empty (0 rows)", 
-                   "hint": "The dataset must contain at least one row of data"}
-        
+            return {
+                "error": "DataFrame is empty (0 rows)",
+                "hint": "The dataset must contain at least one row of data",
+            }
+
         # Create a DataFrame without the suspicious rows
         df_without_suspicious = self.df.drop(suspicious_rows).reset_index(drop=True)
-        
+
         # If no outcome columns are provided, try to automatically detect numeric columns
         if outcome_columns is None:
             # Exclude the group column from outcome columns if provided
@@ -2097,15 +2382,15 @@ Return your findings in the following JSON format (ONLY respond with valid JSON)
             if group_column and group_column in numeric_cols:
                 numeric_cols.remove(group_column)
             outcome_columns = numeric_cols[:5]  # Use first 5 numeric columns as default
-            
+
         results = {
             "suspicious_rows_count": len(suspicious_rows),
             "dataset_size": len(self.df),
             "dataset_size_without_suspicious": len(df_without_suspicious),
             "outcome_columns": outcome_columns,
-            "comparison_results": []
+            "comparison_results": [],
         }
-        
+
         # If group column is provided, compare differences between groups
         if group_column and group_column in self.df.columns:
             # Check that the group column has at least 2 unique values
@@ -2113,171 +2398,203 @@ Return your findings in the following JSON format (ONLY respond with valid JSON)
             if len(unique_groups) >= 2:
                 results["group_column"] = group_column
                 results["groups"] = [str(g) for g in unique_groups]
-                
+
                 # For each outcome column, calculate statistics with and without suspicious rows
                 for col in outcome_columns:
-                    if col in self.df.columns and pd.api.types.is_numeric_dtype(self.df[col]):
+                    if col in self.df.columns and pd.api.types.is_numeric_dtype(
+                        self.df[col]
+                    ):
                         try:
                             # Calculate statistics for full dataset
-                            full_stats = self._calculate_group_statistics(self.df, group_column, col)
-                            
+                            full_stats = self._calculate_group_statistics(
+                                self.df, group_column, col
+                            )
+
                             # Calculate statistics without suspicious rows
-                            clean_stats = self._calculate_group_statistics(df_without_suspicious, group_column, col)
-                            
+                            clean_stats = self._calculate_group_statistics(
+                                df_without_suspicious, group_column, col
+                            )
+
                             # Calculate effect sizes
                             full_effect_size = self._calculate_effect_size(full_stats)
                             clean_effect_size = self._calculate_effect_size(clean_stats)
-                            
+
                             # Calculate percent change in effect size
                             effect_size_change = 0
                             if clean_effect_size != 0:
-                                effect_size_change = ((full_effect_size - clean_effect_size) / abs(clean_effect_size)) * 100
-                            
+                                effect_size_change = (
+                                    (full_effect_size - clean_effect_size)
+                                    / abs(clean_effect_size)
+                                ) * 100
+
                             # Hypothesis testing (t-test) with and without suspicious rows
                             full_ttest = self._perform_ttest(self.df, group_column, col)
-                            clean_ttest = self._perform_ttest(df_without_suspicious, group_column, col)
-                            
+                            clean_ttest = self._perform_ttest(
+                                df_without_suspicious, group_column, col
+                            )
+
                             # Check if significance changes
-                            significance_changed = (full_ttest["p_value"] < 0.05 and clean_ttest["p_value"] >= 0.05) or \
-                                                  (full_ttest["p_value"] >= 0.05 and clean_ttest["p_value"] < 0.05)
-                            
-                            results["comparison_results"].append({
-                                "column": col,
-                                "with_suspicious": {
-                                    "group_stats": full_stats,
-                                    "effect_size": full_effect_size,
-                                    "ttest": full_ttest
-                                },
-                                "without_suspicious": {
-                                    "group_stats": clean_stats,
-                                    "effect_size": clean_effect_size,
-                                    "ttest": clean_ttest
-                                },
-                                "effect_size_change_percent": effect_size_change,
-                                "significance_changed": significance_changed,
-                                "significance_change_description": self._describe_significance_change(
-                                    full_ttest["p_value"], clean_ttest["p_value"])
-                            })
+                            significance_changed = (
+                                full_ttest["p_value"] < 0.05
+                                and clean_ttest["p_value"] >= 0.05
+                            ) or (
+                                full_ttest["p_value"] >= 0.05
+                                and clean_ttest["p_value"] < 0.05
+                            )
+
+                            results["comparison_results"].append(
+                                {
+                                    "column": col,
+                                    "with_suspicious": {
+                                        "group_stats": full_stats,
+                                        "effect_size": full_effect_size,
+                                        "ttest": full_ttest,
+                                    },
+                                    "without_suspicious": {
+                                        "group_stats": clean_stats,
+                                        "effect_size": clean_effect_size,
+                                        "ttest": clean_ttest,
+                                    },
+                                    "effect_size_change_percent": effect_size_change,
+                                    "significance_changed": significance_changed,
+                                    "significance_change_description": self._describe_significance_change(
+                                        full_ttest["p_value"], clean_ttest["p_value"]
+                                    ),
+                                }
+                            )
                         except Exception as e:
-                            results["comparison_results"].append({
-                                "column": col,
-                                "error": str(e)
-                            })
+                            results["comparison_results"].append(
+                                {"column": col, "error": str(e)}
+                            )
             else:
-                results["warning"] = f"Group column '{group_column}' has fewer than 2 unique values"
+                results["warning"] = (
+                    f"Group column '{group_column}' has fewer than 2 unique values"
+                )
         else:
             # Without a group column, compare overall statistics
             for col in outcome_columns:
-                if col in self.df.columns and pd.api.types.is_numeric_dtype(self.df[col]):
+                if col in self.df.columns and pd.api.types.is_numeric_dtype(
+                    self.df[col]
+                ):
                     try:
                         # Calculate statistics for full dataset
                         full_mean = float(self.df[col].mean())
                         full_std = float(self.df[col].std())
-                        
+
                         # Calculate statistics without suspicious rows
                         clean_mean = float(df_without_suspicious[col].mean())
                         clean_std = float(df_without_suspicious[col].std())
-                        
+
                         # Calculate percent changes
                         mean_change = 0
                         if clean_mean != 0:
-                            mean_change = ((full_mean - clean_mean) / abs(clean_mean)) * 100
-                            
+                            mean_change = (
+                                (full_mean - clean_mean) / abs(clean_mean)
+                            ) * 100
+
                         std_change = 0
                         if clean_std != 0:
                             std_change = ((full_std - clean_std) / abs(clean_std)) * 100
-                        
-                        results["comparison_results"].append({
-                            "column": col,
-                            "with_suspicious": {
-                                "mean": full_mean,
-                                "std": full_std
-                            },
-                            "without_suspicious": {
-                                "mean": clean_mean,
-                                "std": clean_std
-                            },
-                            "mean_change_percent": mean_change,
-                            "std_change_percent": std_change
-                        })
+
+                        results["comparison_results"].append(
+                            {
+                                "column": col,
+                                "with_suspicious": {"mean": full_mean, "std": full_std},
+                                "without_suspicious": {
+                                    "mean": clean_mean,
+                                    "std": clean_std,
+                                },
+                                "mean_change_percent": mean_change,
+                                "std_change_percent": std_change,
+                            }
+                        )
                     except Exception as e:
-                        results["comparison_results"].append({
-                            "column": col,
-                            "error": str(e)
-                        })
-        
+                        results["comparison_results"].append(
+                            {"column": col, "error": str(e)}
+                        )
+
         return results
-    
-    def _calculate_group_statistics(self, df: pd.DataFrame, group_col: str, outcome_col: str) -> Dict[str, Dict[str, float]]:
+
+    def _calculate_group_statistics(
+        self, df: pd.DataFrame, group_col: str, outcome_col: str
+    ) -> Dict[str, Dict[str, float]]:
         """Calculate statistics for each group in the dataset."""
         group_stats = {}
         for group in df[group_col].unique():
             group_data = df[df[group_col] == group][outcome_col]
             group_stats[str(group)] = {
                 "count": len(group_data),
-                "mean": float(group_data.mean()) if len(group_data) > 0 else float('nan'),
-                "std": float(group_data.std()) if len(group_data) > 1 else float('nan'),
-                "min": float(group_data.min()) if len(group_data) > 0 else float('nan'),
-                "max": float(group_data.max()) if len(group_data) > 0 else float('nan')
+                "mean": float(group_data.mean())
+                if len(group_data) > 0
+                else float("nan"),
+                "std": float(group_data.std()) if len(group_data) > 1 else float("nan"),
+                "min": float(group_data.min()) if len(group_data) > 0 else float("nan"),
+                "max": float(group_data.max()) if len(group_data) > 0 else float("nan"),
             }
         return group_stats
-    
+
     def _calculate_effect_size(self, group_stats: Dict[str, Dict[str, float]]) -> float:
         """Calculate simple effect size (difference between max and min group means)."""
         if len(group_stats) < 2:
             return 0.0
-            
+
         # Extract means, handling potential NaN values
-        means = [stats.get("mean", float('nan')) for stats in group_stats.values()]
+        means = [stats.get("mean", float("nan")) for stats in group_stats.values()]
         valid_means = [m for m in means if not np.isnan(m)]
-        
+
         if len(valid_means) < 2:
             return 0.0
-            
+
         return float(max(valid_means) - min(valid_means))
-    
-    def _perform_ttest(self, df: pd.DataFrame, group_col: str, outcome_col: str) -> Dict[str, float]:
+
+    def _perform_ttest(
+        self, df: pd.DataFrame, group_col: str, outcome_col: str
+    ) -> Dict[str, float]:
         """Perform t-test between the first two groups in the dataset."""
         from scipy import stats
-        
+
         groups = df[group_col].unique()
         if len(groups) < 2:
-            return {"t_statistic": float('nan'), "p_value": float('nan')}
-            
+            return {"t_statistic": float("nan"), "p_value": float("nan")}
+
         # Use the first two groups for the t-test
         group1_data = df[df[group_col] == groups[0]][outcome_col].dropna()
         group2_data = df[df[group_col] == groups[1]][outcome_col].dropna()
-        
+
         if len(group1_data) < 2 or len(group2_data) < 2:
-            return {"t_statistic": float('nan'), "p_value": float('nan')}
-            
+            return {"t_statistic": float("nan"), "p_value": float("nan")}
+
         try:
             t_stat, p_val = stats.ttest_ind(group1_data, group2_data, equal_var=False)
             return {"t_statistic": float(t_stat), "p_value": float(p_val)}
         except Exception:
-            return {"t_statistic": float('nan'), "p_value": float('nan')}
-    
-    def _describe_significance_change(self, p_val_with: float, p_val_without: float) -> str:
+            return {"t_statistic": float("nan"), "p_value": float("nan")}
+
+    def _describe_significance_change(
+        self, p_val_with: float, p_val_without: float
+    ) -> str:
         """Create a description of how statistical significance changed."""
         if np.isnan(p_val_with) or np.isnan(p_val_without):
             return "Could not assess significance change due to insufficient data"
-            
+
         if p_val_with < 0.05 and p_val_without >= 0.05:
             return "Result is significant WITH suspicious rows, but NOT significant without them"
         elif p_val_with >= 0.05 and p_val_without < 0.05:
             return "Result is NOT significant WITH suspicious rows, but IS significant without them"
         elif p_val_with < 0.05 and p_val_without < 0.05:
-            p_change = abs(p_val_with - p_val_without) / max(p_val_with, p_val_without) * 100
+            p_change = (
+                abs(p_val_with - p_val_without) / max(p_val_with, p_val_without) * 100
+            )
             if p_change > 50:
                 return f"Result remains significant but p-value changes substantially ({p_change:.1f}% change)"
             else:
                 return "Result remains significant with or without suspicious rows"
         else:
             return "Result remains non-significant with or without suspicious rows"
-            
+
     def generate_report(self) -> str:
         """Generate an HTML report of the findings.
-        
+
         Returns:
             str: HTML report of findings
         """
@@ -2440,7 +2757,7 @@ class ExcelForensics:
 
     def __init__(self, excel_file: str) -> None:
         """Initialize with an Excel file path.
-        
+
         Args:
             excel_file: Path to the Excel file to analyze
         """
@@ -2449,9 +2766,9 @@ class ExcelForensics:
         self.extracted: bool = False
         self.calc_chain: List[Dict[str, Any]] = []
 
-    def __enter__(self) -> 'ExcelForensics':
+    def __enter__(self) -> "ExcelForensics":
         """Context manager entry - extract the Excel file.
-        
+
         Returns:
             ExcelForensics: Self for use with context manager
         """
@@ -2459,10 +2776,14 @@ class ExcelForensics:
         self.extract_excel()
         return self
 
-    def __exit__(self, exc_type: Optional[type], exc_val: Optional[Exception], 
-                exc_tb: Optional[Any]) -> None:
+    def __exit__(
+        self,
+        exc_type: Optional[type],
+        exc_val: Optional[Exception],
+        exc_tb: Optional[Any],
+    ) -> None:
         """Context manager exit - clean up temporary files.
-        
+
         Args:
             exc_type: Exception type if an exception was raised in the context
             exc_val: Exception value if an exception was raised

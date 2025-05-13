@@ -12,11 +12,11 @@ setup(
         "seaborn",
         "scipy",
         "openpyxl",
-        "statsmodels"
+        "statsmodels",
     ],
     entry_points={
-        'console_scripts': [
-            'data-forensics=src.main:main',
+        "console_scripts": [
+            "data-forensics=src.main:main",
         ],
     },
 )

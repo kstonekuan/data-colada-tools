@@ -25,14 +25,21 @@ var/
 # Config files with sensitive information
 config.json
 
-# Data files
+# Data files (but allow sample datasets)
 data/
-*.csv
-*.tsv
-*.json
-*.fasta
-*.fa
-*.vcf
+uploads/
+# Ignore data files in general but allow sample datasets
+!samples/
+!samples/**
+!samples/datasets/
+!samples/datasets/*.csv
+!samples/datasets/*.xlsx
+!samples/datasets/*.xls
+!samples/datasets/*.dta
+!samples/datasets/*.sav
+!samples/datasets/*.txt
+!samples/papers/
+!samples/papers/*.pdf
 
 # Editor/IDE
 .idea/
@@ -49,6 +56,9 @@ data/
 ehthumbs.db
 Thumbs.db
 
+# Generated files
 results/*
 uploads/*
 *.log
+
+.claude

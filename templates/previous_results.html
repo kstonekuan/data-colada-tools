@@ -28,6 +28,11 @@
                         <div class="row align-items-center">
                             <div class="col-md-4">
                                 <strong>{{ result.filename }}</strong>
+                                {% if result.is_sample %}
+                                <span class="badge bg-success ms-1 small">
+                                    <i class="fas fa-flask me-1"></i>Sample
+                                </span>
+                                {% endif %}
                             </div>
                             <div class="col-md-2 text-muted">
                                 {{ result.date }}

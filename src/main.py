@@ -4,8 +4,9 @@ import json
 import logging
 import os
 import traceback
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set
 
+import numpy as np
 import pandas as pd
 from anthropic import Anthropic
 
@@ -136,28 +137,28 @@ def analyze_column_unique_values(
     client: Anthropic,
     data_path: str,
     columns: Optional[List[str]] = None,
-    output_dir: Optional[str] = None
+    output_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Analyze unique values in each column using Claude.
-    
+
     Args:
         client: Claude API client
         data_path: Path to the dataset file
         columns: Optional list of columns to analyze. If None, analyze all columns.
         output_dir: Directory to save output file
-        
+
     Returns:
         Dictionary mapping column names to analysis results
     """
     logger.info(f"Analyzing unique column values in: {data_path}")
-    
+
     # Create output directory if needed
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    
+
     # Initialize data forensics
     forensics = DataForensics()
-    
+
     # Read the data file
     try:
         forensics.analyze_dataset(data_path)
@@ -165,7 +166,7 @@ def analyze_column_unique_values(
         error_msg = f"Error loading dataset: {str(e)}"
         logger.error(error_msg)
         return {"error": error_msg}
-    
+
     # Analyze unique values in each column
     try:
         results = forensics.analyze_column_unique_values(client, columns)
@@ -173,30 +174,44 @@ def analyze_column_unique_values(
         error_msg = f"Error analyzing column values: {str(e)}"
         logger.error(error_msg)
         return {"error": error_msg}
-    
+
     # Generate a summary report of highly suspicious columns
     suspicious_columns = []
     for column, result in results.items():
-        if "suspicion_rating" in result and result["suspicion_rating"] and result["suspicion_rating"] >= 7:
-            suspicious_columns.append({
-                "column": column,
-                "rating": result["suspicion_rating"],
-                "unique_count": result["unique_count"]
-            })
-    
+        if (
+            "suspicion_rating" in result
+            and result["suspicion_rating"]
+            and result["suspicion_rating"] >= 7
+        ):
+            suspicious_columns.append(
+                {
+                    "column": column,
+                    "rating": result["suspicion_rating"],
+                    "unique_count": result["unique_count"],
+                }
+            )
+
     # Sort by suspicion rating (descending)
     suspicious_columns.sort(key=lambda x: x["rating"], reverse=True)
-    
+
     # Include the summary in the results
     results["summary"] = {
         "total_columns_analyzed": len(results) - 1,  # Exclude the summary key
         "suspicious_columns": suspicious_columns,
-        "average_suspicion": np.mean([r.get("suspicion_rating", 0) or 0 for c, r in results.items() if c != "summary"])
+        "average_suspicion": np.mean(
+            [
+                r.get("suspicion_rating", 0) or 0
+                for c, r in results.items()
+                if c != "summary"
+            ]
+        ),
     }
-    
+
     # Save results to file if output directory provided
     if output_dir:
-        report_path = os.path.join(output_dir, f"column_analysis_{os.path.basename(data_path)}.json")
+        report_path = os.path.join(
+            output_dir, f"column_analysis_{os.path.basename(data_path)}.json"
+        )
         with open(report_path, "w") as f:
             # Handle numpy types by converting to Python types
             def json_serializer(obj):
@@ -207,11 +222,12 @@ def analyze_column_unique_values(
                 if isinstance(obj, np.ndarray):
                     return obj.tolist()
                 raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
-            
+
             json.dump(results, f, indent=2, default=json_serializer)
         logger.info(f"Column analysis saved to {report_path}")
-    
+
     return results
+
 
 def detect_data_manipulation(
     client: Anthropic,
@@ -321,17 +337,23 @@ def detect_data_manipulation(
         logger.info(
             f"Checking sorting anomalies for ID column '{id_col}' within groups '{group_col}'"
         )
-        
+
         # Pass user suspicions if provided
         if user_suspicions:
-            logger.info("Using user-provided suspicions to guide (but not bias) analysis")
+            logger.info(
+                "Using user-provided suspicions to guide (but not bias) analysis"
+            )
             sorting_issues = forensics.check_sorting_anomalies(
-                id_col, 
-                group_col, 
+                id_col,
+                group_col,
                 check_dependent_vars=True,
-                prioritize_columns=user_suspicions.get("focus_columns", []) + user_suspicions.get("outcome_columns", []),
-                prioritize_out_of_order=any(issue.lower() in ["out of order", "out-of-order", "out_of_order", "sorting"] 
-                                           for issue in user_suspicions.get("potential_issues", []))
+                prioritize_columns=user_suspicions.get("focus_columns", [])
+                + user_suspicions.get("outcome_columns", []),
+                prioritize_out_of_order=any(
+                    issue.lower()
+                    in ["out of order", "out-of-order", "out_of_order", "sorting"]
+                    for issue in user_suspicions.get("potential_issues", [])
+                ),
             )
         else:
             sorting_issues = forensics.check_sorting_anomalies(id_col, group_col)
@@ -370,21 +392,29 @@ def detect_data_manipulation(
                         findings.append(
                             {"type": "effect_size_analysis", "details": effects}
                         )
-                    
+
                     # Compare results with and without suspicious rows
                     comparison_results = forensics.compare_with_without_suspicious_rows(
                         suspicious_rows, group_col, column_categories["outcome_columns"]
                     )
-                    
+
                     if comparison_results and not (
-                        isinstance(comparison_results, dict) and "error" in comparison_results
+                        isinstance(comparison_results, dict)
+                        and "error" in comparison_results
                     ):
                         findings.append(
-                            {"type": "with_without_comparison", "details": comparison_results}
+                            {
+                                "type": "with_without_comparison",
+                                "details": comparison_results,
+                            }
                         )
-                        logger.info("Completed comparison of results with and without suspicious rows")
+                        logger.info(
+                            "Completed comparison of results with and without suspicious rows"
+                        )
                 except Exception as e:
-                    logger.error(f"Error analyzing effect sizes or comparing results: {e}")
+                    logger.error(
+                        f"Error analyzing effect sizes or comparing results: {e}"
+                    )
                     # Don't add to findings if there was an error
 
     # Check for duplicate IDs
@@ -405,7 +435,9 @@ def detect_data_manipulation(
         )
         # Pass user suspicions to Claude analysis if provided
         if user_suspicions:
-            claude_segment_findings = forensics.segment_and_analyze_with_claude(client, user_suspicions=user_suspicions)
+            claude_segment_findings = forensics.segment_and_analyze_with_claude(
+                client, user_suspicions=user_suspicions
+            )
         else:
             claude_segment_findings = forensics.segment_and_analyze_with_claude(client)
 
@@ -798,18 +830,33 @@ Please review the technical findings and visualizations to make your own assessm
                             logger.info(f"Created effect sizes plot: {effect_plot}")
                     except Exception as e:
                         logger.error(f"Error creating effect sizes plot: {e}")
-                        
+
                     # Try to plot with/without comparison if we have that data
                     try:
-                        comparison_findings = [f for f in findings if f.get("type") == "with_without_comparison"]
+                        comparison_findings = [
+                            f
+                            for f in findings
+                            if f.get("type") == "with_without_comparison"
+                        ]
                         if comparison_findings and "details" in comparison_findings[0]:
                             comparison_results = comparison_findings[0]["details"]
-                            comparison_plot = visualizer.plot_with_without_comparison(comparison_results)
+                            comparison_plot = visualizer.plot_with_without_comparison(
+                                comparison_results
+                            )
                             if comparison_plot:
-                                plots.append({"type": "with_without_comparison", "path": comparison_plot})
-                                logger.info(f"Created with/without comparison plot: {comparison_plot}")
+                                plots.append(
+                                    {
+                                        "type": "with_without_comparison",
+                                        "path": comparison_plot,
+                                    }
+                                )
+                                logger.info(
+                                    f"Created with/without comparison plot: {comparison_plot}"
+                                )
                     except Exception as e:
-                        logger.error(f"Error creating with/without comparison plot: {e}")
+                        logger.error(
+                            f"Error creating with/without comparison plot: {e}"
+                        )
         except Exception as e:
             logger.error(f"Error during visualization: {e}")
 
@@ -851,48 +898,62 @@ def main() -> int:
     parser.add_argument("--api-key", help="Claude API key")
     parser.add_argument("--data", required=True, help="Path to input data file")
     parser.add_argument("--output", help="Directory to save output reports")
-    parser.add_argument("--analyze-columns", action="store_true", 
-                      help="Analyze unique values in each column using Claude")
-    parser.add_argument("--columns", nargs="+", 
-                      help="Specific columns to analyze (for use with --analyze-columns)")
+    parser.add_argument(
+        "--analyze-columns",
+        action="store_true",
+        help="Analyze unique values in each column using Claude",
+    )
+    parser.add_argument(
+        "--columns",
+        nargs="+",
+        help="Specific columns to analyze (for use with --analyze-columns)",
+    )
 
     args: argparse.Namespace = parser.parse_args()
 
     try:
         client: Anthropic = setup_client(args.api_key)
-        
+
         if args.analyze_columns:
             # Run column unique value analysis
             logger.info("Running column unique value analysis...")
-            results = analyze_column_unique_values(client, args.data, args.columns, args.output)
-            
+            results = analyze_column_unique_values(
+                client, args.data, args.columns, args.output
+            )
+
             # Print a summary to the console
             if "error" in results:
                 logger.error(f"Error: {results['error']}")
                 return 1
-                
+
             if "summary" in results:
                 summary = results["summary"]
-                print(f"\nColumn Analysis Summary:")
+                print("\nColumn Analysis Summary:")
                 print(f"- Analyzed {summary['total_columns_analyzed']} columns")
-                print(f"- Average suspicion rating: {summary['average_suspicion']:.2f}/10")
-                
+                print(
+                    f"- Average suspicion rating: {summary['average_suspicion']:.2f}/10"
+                )
+
                 if summary["suspicious_columns"]:
                     print("\nHighly suspicious columns:")
                     for col in summary["suspicious_columns"]:
-                        print(f"- {col['column']}: {col['rating']}/10 ({col['unique_count']} unique values)")
+                        print(
+                            f"- {col['column']}: {col['rating']}/10 ({col['unique_count']} unique values)"
+                        )
                 else:
                     print("\nNo highly suspicious columns found.")
-                    
+
                 if args.output:
-                    print(f"\nDetailed results saved to: {os.path.join(args.output, f'column_analysis_{os.path.basename(args.data)}.json')}")
-            
+                    print(
+                        f"\nDetailed results saved to: {os.path.join(args.output, f'column_analysis_{os.path.basename(args.data)}.json')}"
+                    )
+
             logger.info("Column analysis complete!")
         else:
             # Run full data manipulation detection
-            report: Optional[str] = detect_data_manipulation(client, args.data, args.output)
+            detect_data_manipulation(client, args.data, args.output)
             logger.info("Analysis complete!")
-            
+
         return 0
     except Exception as e:
         logger.error(f"Error during analysis: {e}")

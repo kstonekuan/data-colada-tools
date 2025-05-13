@@ -1,0 +1,3 @@
+This is a simple demonstration dataset containing fictional participant data. It includes 10 participants split between control and treatment groups, with basic demographic information and a score variable.
+
+This sample can be used to test the application's functionality without using real research data.

@@ -275,6 +275,74 @@
     </div>
 </div>
 
+<!-- Sample Datasets Section -->
+<div class="row mt-4">
+    <div class="col-md-8 offset-md-2">
+        <div class="card">
+            <div class="card-header bg-light">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">
+                        <i class="fas fa-flask me-2"></i>Sample Datasets
+                    </h5>
+                    <button class="btn btn-link collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#sampleDatasetsCollapse" aria-expanded="false" aria-controls="sampleDatasetsCollapse">
+                        <i class="fas fa-chevron-down"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="collapse" id="sampleDatasetsCollapse">
+                <div class="card-body">
+                    <p class="text-muted">
+                        <i class="fas fa-info-circle me-1"></i>Try out the analysis with curated examples including both clean datasets and datasets with known manipulations.
+                    </p>
+                    
+                    {% if samples %}
+                        <div class="row">
+                            {% for sample in samples %}
+                                <div class="col-md-6 mb-3">
+                                    <div class="card h-100 sample-card">
+                                        <div class="card-body">
+                                            <h5 class="card-title">{{ sample.name }}</h5>
+                                            
+                                            <div class="d-flex align-items-center mb-2">
+                                                <span class="badge bg-secondary">{{ sample.type }}</span>
+                                                {% if sample.paper %}
+                                                    <span class="badge bg-info ms-2">
+                                                        <i class="fas fa-file-pdf me-1"></i>PDF
+                                                    </span>
+                                                {% endif %}
+                                            </div>
+                                            
+                                            {% if sample.description %}
+                                                <p class="card-text">{{ sample.description }}</p>
+                                            {% else %}
+                                                <p class="card-text">Sample dataset for analysis.</p>
+                                            {% endif %}
+                                            
+                                            <a href="{{ url_for('use_sample', filename=sample.filename) }}" class="btn btn-primary mt-2">
+                                                <i class="fas fa-flask me-1"></i>Use This Sample
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+                        
+                        <div class="alert alert-info mt-3">
+                            <i class="fas fa-info-circle me-2"></i>
+                            To add your own sample datasets, place your data files in the <code>samples/datasets</code> directory and optional research papers in <code>samples/papers</code> (with matching filenames).
+                        </div>
+                    {% else %}
+                        <div class="alert alert-warning">
+                            <i class="fas fa-exclamation-circle me-2"></i>
+                            No sample datasets are currently available. Add your sample data files to the <code>samples/datasets</code> directory to make them appear here.
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="row mt-5">
     <div class="col-md-4">
         <div class="card h-100">

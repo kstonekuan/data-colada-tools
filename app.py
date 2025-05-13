@@ -18,11 +18,14 @@ from flask import (
     request,
     send_from_directory,
     url_for,
-    jsonify,
 )
 from werkzeug.utils import secure_filename
 
-from src.main import detect_data_manipulation, setup_client, analyze_column_unique_values
+from src.main import (
+    analyze_column_unique_values,
+    detect_data_manipulation,
+    setup_client,
+)
 
 # Set up logging
 logging.basicConfig(
@@ -116,12 +119,16 @@ def basic_markdown_to_html(md_text):
 
 app.config["UPLOAD_FOLDER"] = "uploads"
 app.config["RESULTS_FOLDER"] = "results"
+app.config["SAMPLES_FOLDER"] = "samples"
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16MB max file size
 app.config["ALLOWED_EXTENSIONS"] = {"xlsx", "csv", "dta", "sav"}
 
 # Create necessary directories
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 os.makedirs(app.config["RESULTS_FOLDER"], exist_ok=True)
+os.makedirs(app.config["SAMPLES_FOLDER"], exist_ok=True)
+os.makedirs(os.path.join(app.config["SAMPLES_FOLDER"], "datasets"), exist_ok=True)
+os.makedirs(os.path.join(app.config["SAMPLES_FOLDER"], "papers"), exist_ok=True)
 
 
 def allowed_file(filename):
@@ -133,7 +140,178 @@ def allowed_file(filename):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    # Get available sample datasets
+    samples = []
+    samples_dir = os.path.join(app.config["SAMPLES_FOLDER"], "datasets")
+    papers_dir = os.path.join(app.config["SAMPLES_FOLDER"], "papers")
+
+    if os.path.exists(samples_dir):
+        for filename in os.listdir(samples_dir):
+            if allowed_file(filename):
+                sample = {
+                    "filename": filename,
+                    "path": os.path.join(samples_dir, filename),
+                    "name": os.path.splitext(filename)[0].replace("_", " ").title(),
+                    "type": os.path.splitext(filename)[1][1:].upper(),
+                }
+
+                # Check if there's a matching paper
+                paper_name = os.path.splitext(filename)[0] + ".pdf"
+                if os.path.exists(os.path.join(papers_dir, paper_name)):
+                    sample["paper"] = paper_name
+                    sample["paper_path"] = os.path.join(papers_dir, paper_name)
+
+                # Check if there's a description file
+                desc_name = os.path.splitext(filename)[0] + ".txt"
+                if os.path.exists(os.path.join(samples_dir, desc_name)):
+                    with open(os.path.join(samples_dir, desc_name), "r") as f:
+                        sample["description"] = f.read().strip()
+
+                samples.append(sample)
+
+    return render_template("index.html", samples=samples)
+
+
+@app.route("/use-sample/<path:filename>")
+def use_sample(filename):
+    # Validate the filename
+    if not re.match(r"^[a-zA-Z0-9_\-\.]+$", os.path.basename(filename)):
+        flash("Invalid sample dataset filename")
+        return redirect(url_for("index"))
+
+    # Construct the sample file path
+    sample_path = os.path.join(app.config["SAMPLES_FOLDER"], "datasets", filename)
+
+    if not os.path.exists(sample_path):
+        flash("Sample dataset not found")
+        return redirect(url_for("index"))
+
+    try:
+        # Create a unique folder for this analysis
+        analysis_id = str(uuid.uuid4())
+        analysis_folder = os.path.join(app.config["RESULTS_FOLDER"], analysis_id)
+        os.makedirs(analysis_folder, exist_ok=True)
+
+        # Check if there's a matching paper
+        paper_path = None
+        paper_name = os.path.splitext(filename)[0] + ".pdf"
+        potential_paper_path = os.path.join(
+            app.config["SAMPLES_FOLDER"], "papers", paper_name
+        )
+
+        if os.path.exists(potential_paper_path):
+            paper_path = os.path.join(analysis_folder, paper_name)
+            # Copy the paper to the analysis folder
+            import shutil
+
+            shutil.copy2(potential_paper_path, paper_path)
+            has_paper = True
+            paper_is_text = False
+        else:
+            has_paper = False
+            paper_is_text = False
+
+        # Initialize Claude client
+        client = setup_client()
+
+        # Run analysis - pass the paper path if provided
+        if has_paper and paper_path:
+            _report = detect_data_manipulation(
+                client,
+                sample_path,
+                analysis_folder,
+                paper_path=paper_path,
+                use_claude_segmentation=True,
+            )
+        else:
+            _report = detect_data_manipulation(
+                client, sample_path, analysis_folder, use_claude_segmentation=True
+            )
+
+        # Read the dataset to get columns/data
+        try:
+            ext = os.path.splitext(sample_path)[1].lower()
+            original_columns = []
+            original_data = []
+
+            if ext == ".xlsx":
+                df = pd.read_excel(sample_path)
+                original_columns = df.columns.tolist()
+                original_data = df.values.tolist()
+            elif ext == ".csv":
+                df = pd.read_csv(sample_path)
+                original_columns = df.columns.tolist()
+                original_data = df.values.tolist()
+            elif ext == ".dta":
+                df = pd.read_stata(sample_path)
+                original_columns = df.columns.tolist()
+                original_data = df.values.tolist()
+            elif ext == ".sav":
+                import pyreadstat
+
+                df, meta = pyreadstat.read_sav(sample_path, encoding=None)
+                original_columns = df.columns.tolist()
+                original_data = df.values.tolist()
+
+            # Convert non-serializable values to Python native types
+            for i, row in enumerate(original_data):
+                for j, val in enumerate(row):
+                    if isinstance(val, (np.integer, np.floating)):
+                        original_data[i][j] = val.item()
+                    elif isinstance(val, np.ndarray):
+                        original_data[i][j] = val.tolist()
+                    elif pd.isna(val):
+                        original_data[i][j] = None
+        except Exception as e:
+            print(f"Error preparing original data for browser: {e}")
+            original_columns = []
+            original_data = []
+
+        # Store analysis information
+        report_filename = f"report_{filename}.md"
+        analysis_info = {
+            "id": analysis_id,
+            "filename": filename,
+            "timestamp": datetime.datetime.now().timestamp(),
+            "report_path": os.path.join(analysis_folder, report_filename),
+            "report_filename": report_filename,
+            "has_paper": has_paper,
+            "paper_path": paper_path if paper_path else None,
+            "paper_is_text": paper_is_text,
+            "original_columns": original_columns,
+            "original_data": original_data,
+            "is_sample": True,
+            "sample_name": os.path.splitext(filename)[0].replace("_", " ").title(),
+        }
+
+        # Save analysis metadata
+        with open(os.path.join(analysis_folder, "analysis_info.json"), "w") as f:
+            json.dump(analysis_info, f)
+
+        return redirect(url_for("view_results", analysis_id=analysis_id))
+
+    except Exception as e:
+        import traceback
+
+        error_details = traceback.format_exc()
+
+        # Log the error
+        error_msg = f"CRITICAL: Sample analysis failed for {filename}: {str(e)}"
+        error_box = "#" * len(error_msg)
+        print(f"\n{error_box}\n{error_msg}\n{error_box}\n")
+        print(f"ERROR DETAILS:\n{error_details}")
+
+        logging.error(f"Sample analysis failed for {filename}: {str(e)}")
+        logging.error(f"Traceback: {error_details}")
+
+        error_summary = str(e)
+        if len(error_summary) > 100:
+            error_summary = error_summary[:100] + "..."
+
+        flash(
+            f"Analysis failed: {error_summary} (See server logs for details)", "error"
+        )
+        return redirect(url_for("index"))
 
 
 def generate_data_preview(file_path, json_findings):
@@ -187,31 +365,45 @@ def generate_data_preview(file_path, json_findings):
                     sort_val = anomaly["sort_value"]
 
                     print(f"Found sorting anomaly at row {row_idx}")
-                    
+
                     # Check if the anomaly has out-of-order analysis
                     out_of_order_info = ""
-                    if "out_of_order_analysis" in anomaly and anomaly["out_of_order_analysis"]:
+                    if (
+                        "out_of_order_analysis" in anomaly
+                        and anomaly["out_of_order_analysis"]
+                    ):
                         oo_analysis = anomaly["out_of_order_analysis"]
                         sorted_by = ", ".join(oo_analysis.get("sorted_by", []))
                         breaking_pattern = oo_analysis.get("breaking_pattern", "")
-                        
+
                         if sorted_by and breaking_pattern:
                             out_of_order_info = f" | Values appear sorted by {sorted_by}, but {breaking_pattern}"
-                            
+
                         # If there are imputed original values, include them
-                        if "imputed_original_values" in oo_analysis and oo_analysis["imputed_original_values"]:
+                        if (
+                            "imputed_original_values" in oo_analysis
+                            and oo_analysis["imputed_original_values"]
+                        ):
                             imputed_vals = oo_analysis["imputed_original_values"]
                             imputed_info = []
-                            
+
                             for imp in imputed_vals:
-                                if all(k in imp for k in ["column", "current", "likely_original"]):
-                                    imputed_info.append(f"{imp['column']}: {imp['current']} → {imp['likely_original']}")
-                            
+                                if all(
+                                    k in imp
+                                    for k in ["column", "current", "likely_original"]
+                                ):
+                                    imputed_info.append(
+                                        f"{imp['column']}: {imp['current']} → {imp['likely_original']}"
+                                    )
+
                             if imputed_info:
                                 out_of_order_info += f" | Likely original values: {', '.join(imputed_info)}"
-                                
+
                         # Include statistical impact if available
-                        if "statistical_impact" in oo_analysis and oo_analysis["statistical_impact"]:
+                        if (
+                            "statistical_impact" in oo_analysis
+                            and oo_analysis["statistical_impact"]
+                        ):
                             out_of_order_info += f" | Statistical impact: {oo_analysis['statistical_impact']}"
 
                     # Mark row as suspicious
@@ -222,7 +414,9 @@ def generate_data_preview(file_path, json_findings):
                             "type": "sorting_anomaly",
                             "css_class": "sorting-anomaly",
                             "explanation": f"Sorting anomaly: ID {id_val} comes after ID {prev_id} in group {sort_col}={sort_val}{out_of_order_info}",
-                            "out_of_order_analysis": anomaly.get("out_of_order_analysis", {})
+                            "out_of_order_analysis": anomaly.get(
+                                "out_of_order_analysis", {}
+                            ),
                         }
                     )
 
@@ -239,36 +433,44 @@ def generate_data_preview(file_path, json_findings):
                         id_col = id_columns[0]
                         cell_key = f"{row_idx}_{id_col}"
                         # Base explanation
-                        explanation = f"ID {id_val} out of sequence (previous ID: {prev_id})"
-                        
+                        explanation = (
+                            f"ID {id_val} out of sequence (previous ID: {prev_id})"
+                        )
+
                         # Check if we have out-of-order analysis
                         css_class = "cell-highlight-sorting"
-                        if "out_of_order_analysis" in anomaly and anomaly["out_of_order_analysis"]:
-                            explanation += f" | Potential data manipulation detected"
-                            # Add the out-of-order class to highlight it more prominently 
+                        if (
+                            "out_of_order_analysis" in anomaly
+                            and anomaly["out_of_order_analysis"]
+                        ):
+                            explanation += " | Potential data manipulation detected"
+                            # Add the out-of-order class to highlight it more prominently
                             css_class += " cell-highlight-out-of-order"
-                            
+
                             # Add details about specific columns that may have been manipulated
                             oo_analysis = anomaly["out_of_order_analysis"]
-                            if "imputed_original_values" in oo_analysis and oo_analysis["imputed_original_values"]:
+                            if (
+                                "imputed_original_values" in oo_analysis
+                                and oo_analysis["imputed_original_values"]
+                            ):
                                 for imp in oo_analysis["imputed_original_values"]:
                                     explanation += f" | Column {imp['column']} likely altered from {imp['likely_original']} to {imp['current']}"
-                                    
+
                                     # Also mark the specific manipulated column cells
                                     if imp["column"] in df.columns:
                                         affected_col = imp["column"]
                                         affected_cell_key = f"{row_idx}_{affected_col}"
                                         affected_explanation = f"Value {imp['current']} is inconsistent with surrounding values. Likely original value: {imp['likely_original']}"
-                                        
+
                                         if "statistical_impact" in oo_analysis:
                                             affected_explanation += f" | {oo_analysis['statistical_impact']}"
-                                            
+
                                         suspicious_cells[affected_cell_key] = {
                                             "type": "sorting_value_manipulation",
                                             "css_class": "cell-highlight-out-of-order",
                                             "explanation": affected_explanation,
                                         }
-                                    
+
                         suspicious_cells[cell_key] = {
                             "type": "sorting",
                             "css_class": css_class,
@@ -359,7 +561,7 @@ def generate_data_preview(file_path, json_findings):
                 # Process anomalies detected by Claude in data segments
                 detail = finding["details"]
                 print(f"Processing Claude anomaly: {json.dumps(detail, indent=2)}")
-                
+
                 # Handle both string and list row indices formats
                 row_indices = []
                 if "row_indices" in detail:
@@ -371,23 +573,28 @@ def generate_data_preview(file_path, json_findings):
                             row_indices = json.loads(detail["row_indices"])
                             if not isinstance(row_indices, list):
                                 row_indices = [row_indices]
-                        except:
+                        except (json.JSONDecodeError, TypeError, ValueError):
                             # If JSON parsing fails, treat as a single value
                             row_indices = [detail["row_indices"]]
-                
+
                 # If we still don't have row indices, look for "rows" field which might contain range
                 if not row_indices and "rows" in finding:
                     rows_str = finding["rows"]
-                    # Parse patterns like "100-200" 
+                    # Parse patterns like "100-200"
                     range_match = re.match(r"(\d+)-(\d+)", rows_str)
                     if range_match:
-                        start, end = int(range_match.group(1)), int(range_match.group(2))
+                        start, end = (
+                            int(range_match.group(1)),
+                            int(range_match.group(2)),
+                        )
                         # Add a sample of rows from this range to highlight (limit to 10 for performance)
                         sample_size = min(10, end - start + 1)
                         sample_indices = list(range(start, start + sample_size))
                         row_indices = sample_indices
-                        print(f"Using sample of {sample_size} rows from range {rows_str}")
-                
+                        print(
+                            f"Using sample of {sample_size} rows from range {rows_str}"
+                        )
+
                 if row_indices:
                     for row_idx in row_indices:
                         try:
@@ -402,28 +609,50 @@ def generate_data_preview(file_path, json_findings):
 
                             # Add handling for out_of_order_analysis
                             out_of_order_info = ""
-                            if "out_of_order_analysis" in detail and detail["out_of_order_analysis"]:
+                            if (
+                                "out_of_order_analysis" in detail
+                                and detail["out_of_order_analysis"]
+                            ):
                                 oo_analysis = detail["out_of_order_analysis"]
                                 sorted_by = ", ".join(oo_analysis.get("sorted_by", []))
-                                breaking_pattern = oo_analysis.get("breaking_pattern", "")
-                                
+                                breaking_pattern = oo_analysis.get(
+                                    "breaking_pattern", ""
+                                )
+
                                 if sorted_by and breaking_pattern:
                                     out_of_order_info = f" | Data appears sorted by {sorted_by}, but {breaking_pattern}"
-                                    
+
                                 # If there are imputed original values, include them
-                                if "imputed_original_values" in oo_analysis and oo_analysis["imputed_original_values"]:
-                                    imputed_vals = oo_analysis["imputed_original_values"]
+                                if (
+                                    "imputed_original_values" in oo_analysis
+                                    and oo_analysis["imputed_original_values"]
+                                ):
+                                    imputed_vals = oo_analysis[
+                                        "imputed_original_values"
+                                    ]
                                     imputed_info = []
-                                    
+
                                     for imp in imputed_vals:
-                                        if all(k in imp for k in ["column", "current", "likely_original"]):
-                                            imputed_info.append(f"{imp['column']}: {imp['current']} → {imp['likely_original']}")
-                                    
+                                        if all(
+                                            k in imp
+                                            for k in [
+                                                "column",
+                                                "current",
+                                                "likely_original",
+                                            ]
+                                        ):
+                                            imputed_info.append(
+                                                f"{imp['column']}: {imp['current']} → {imp['likely_original']}"
+                                            )
+
                                     if imputed_info:
                                         out_of_order_info += f" | Likely original values: {', '.join(imputed_info)}"
-                                        
+
                                 # Include statistical impact if available
-                                if "statistical_impact" in oo_analysis and oo_analysis["statistical_impact"]:
+                                if (
+                                    "statistical_impact" in oo_analysis
+                                    and oo_analysis["statistical_impact"]
+                                ):
                                     out_of_order_info += f" | Statistical impact: {oo_analysis['statistical_impact']}"
 
                             print(
@@ -437,31 +666,43 @@ def generate_data_preview(file_path, json_findings):
                                     "type": "claude_detected_anomaly",
                                     "css_class": "claude-anomaly",
                                     "explanation": f"{explanation} (Columns: {cols_involved}, Severity: {severity}/10){out_of_order_info}",
-                                    "out_of_order_analysis": detail.get("out_of_order_analysis", {})
+                                    "out_of_order_analysis": detail.get(
+                                        "out_of_order_analysis", {}
+                                    ),
                                 }
                             )
 
                             # Mark the specific columns as suspicious
                             columns_to_mark = detail.get("columns_involved", [])
                             if not columns_to_mark and len(df.columns) > 0:
-                                # If no columns specified, mark the first column 
+                                # If no columns specified, mark the first column
                                 columns_to_mark = [df.columns[0]]
-                                
+
                             for col in columns_to_mark:
                                 if col in df.columns:
                                     cell_key = f"{row_idx}_{col}"
-                                    
+
                                     # Check if this is an out-of-order cell
                                     css_class = "cell-highlight-claude"
-                                    if "out_of_order_analysis" in detail and detail["out_of_order_analysis"]:
+                                    if (
+                                        "out_of_order_analysis" in detail
+                                        and detail["out_of_order_analysis"]
+                                    ):
                                         # Check if this specific column is mentioned in imputed values
                                         oo_analysis = detail["out_of_order_analysis"]
-                                        if "imputed_original_values" in oo_analysis and oo_analysis["imputed_original_values"]:
-                                            for imp in oo_analysis["imputed_original_values"]:
+                                        if (
+                                            "imputed_original_values" in oo_analysis
+                                            and oo_analysis["imputed_original_values"]
+                                        ):
+                                            for imp in oo_analysis[
+                                                "imputed_original_values"
+                                            ]:
                                                 if imp.get("column") == col:
-                                                    css_class += " cell-highlight-out-of-order"
+                                                    css_class += (
+                                                        " cell-highlight-out-of-order"
+                                                    )
                                                     explanation += f" | Original value likely {imp.get('likely_original')} (current: {imp.get('current')})"
-                                    
+
                                     suspicious_cells[cell_key] = {
                                         "type": "claude_anomaly",
                                         "css_class": css_class,
@@ -587,9 +828,7 @@ def generate_data_preview(file_path, json_findings):
         html_output += '        <div class="col-md-3 mb-2">\n'
         html_output += '          <div class="d-flex align-items-center">\n'
         html_output += '            <div style="width: 24px; height: 24px; border: 2px solid #6f42c1; margin-right: 8px;"></div>\n'
-        html_output += (
-            "            <span><strong>Purple:</strong> Claude AI Anomalies (strikethrough = out-of-order values)</span>\n"
-        )
+        html_output += "            <span><strong>Purple:</strong> Claude AI Anomalies (strikethrough = out-of-order values)</span>\n"
         html_output += "          </div>\n"
         html_output += "        </div>\n"
 
@@ -982,7 +1221,7 @@ def generate_data_preview(file_path, json_findings):
                         html_output += f"        <td>{cell_display}</td>\n"
                 except Exception as cell_error:
                     print(f"Error processing cell {col} in row {idx}: {cell_error}")
-                    html_output += f"        <td></td>\n"
+                    html_output += "        <td></td>\n"
 
             html_output += "      </tr>\n"
 
@@ -997,11 +1236,11 @@ def generate_data_preview(file_path, json_findings):
         displayed_rows = len(display_indices)
         skipped_rows = len(df) - displayed_rows
         if skipped_rows > 0:
-            html_output += f'  <div class="alert alert-info mt-3 mb-0">'
-            html_output += f'    <i class="fas fa-info-circle me-2"></i>'
+            html_output += '  <div class="alert alert-info mt-3 mb-0">'
+            html_output += '    <i class="fas fa-info-circle me-2"></i>'
             html_output += f"    Smart preview: Showing {displayed_rows} rows (including all suspicious rows and their context) "
             html_output += f"    from a total of {len(df)} rows. {skipped_rows} rows without issues are condensed."
-            html_output += f"  </div>\n"
+            html_output += "  </div>\n"
 
         html_output += "</div>\n"
 
@@ -1044,7 +1283,7 @@ def generate_data_preview(file_path, json_findings):
         try:
             logging.error(f"Data preview generation failed: {str(e)}")
             logging.error(f"Traceback: {error_details}")
-        except:
+        except Exception:
             pass  # Silently handle if logging isn't configured
 
         return f"<div class='alert alert-danger'>Error generating data preview: {str(e)}<br><small>Check server logs for details.</small></div>"
@@ -1118,128 +1357,144 @@ def analyze_columns():
     if "file" not in request.files:
         flash("No file part")
         return redirect(url_for("index"))
-        
+
     file = request.files["file"]
-    
+
     # Check if the file is valid
     if file.filename == "":
         flash("No file selected")
         return redirect(url_for("index"))
-        
+
     if not file or not allowed_file(file.filename):
         allowed_ext = ", ".join(app.config["ALLOWED_EXTENSIONS"])
         flash(f"Invalid file type. Allowed types: {allowed_ext}")
         return redirect(url_for("index"))
-    
+
     # Generate a unique analysis ID
-    analysis_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + str(uuid.uuid4())[:8]
+    analysis_id = (
+        datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + str(uuid.uuid4())[:8]
+    )
     analysis_folder = os.path.join(app.config["RESULTS_FOLDER"], analysis_id)
     os.makedirs(analysis_folder, exist_ok=True)
-    
+
     # Save the uploaded file
     filename = secure_filename(file.filename)
     file_path = os.path.join(analysis_folder, filename)
     file.save(file_path)
-    
+
     # Get columns to analyze (if specified)
     columns_to_analyze = request.form.get("columns", "").strip()
     columns = columns_to_analyze.split(",") if columns_to_analyze else None
-    
+
     # Set up Claude client
     try:
         client = setup_client()
     except Exception as e:
         flash(f"Error setting up Claude API client: {str(e)}")
         return redirect(url_for("index"))
-    
+
     # Run the column analysis
     try:
-        column_analysis = analyze_column_unique_values(client, file_path, columns, analysis_folder)
-        
+        column_analysis = analyze_column_unique_values(
+            client, file_path, columns, analysis_folder
+        )
+
         # Save the analysis results
         analysis_path = os.path.join(analysis_folder, "column_analysis.json")
         with open(analysis_path, "w") as f:
             json.dump(column_analysis, f, indent=2)
-            
+
         # Create a human-readable report
         report_content = "# Column Analysis Report\n\n"
         report_content += f"Dataset: {filename}\n\n"
         report_content += f"Total columns analyzed: {column_analysis['summary']['total_columns_analyzed']}\n"
         report_content += f"Average suspicion rating: {column_analysis['summary']['average_suspicion']:.2f}/10\n\n"
-        
+
         # Add highly suspicious columns
-        if column_analysis['summary']['suspicious_columns']:
+        if column_analysis["summary"]["suspicious_columns"]:
             report_content += "## Highly Suspicious Columns\n\n"
-            for col in column_analysis['summary']['suspicious_columns']:
-                report_content += f"### {col['column']} (Rating: {col['rating']}/10)\n\n"
-                if col['column'] in column_analysis:
-                    report_content += column_analysis[col['column']]['analysis'] + "\n\n"
-                    
+            for col in column_analysis["summary"]["suspicious_columns"]:
+                report_content += (
+                    f"### {col['column']} (Rating: {col['rating']}/10)\n\n"
+                )
+                if col["column"] in column_analysis:
+                    report_content += (
+                        column_analysis[col["column"]]["analysis"] + "\n\n"
+                    )
+
         # Add all other columns
         report_content += "## All Columns\n\n"
         for col_name, col_data in column_analysis.items():
-            if col_name != "summary" and col_name not in [c['column'] for c in column_analysis['summary']['suspicious_columns']]:
-                suspicion = col_data.get('suspicion_rating', 'N/A')
+            if col_name != "summary" and col_name not in [
+                c["column"] for c in column_analysis["summary"]["suspicious_columns"]
+            ]:
+                suspicion = col_data.get("suspicion_rating", "N/A")
                 report_content += f"### {col_name} (Rating: {suspicion}/10)\n\n"
-                report_content += col_data.get('analysis', 'No analysis available') + "\n\n"
-        
+                report_content += (
+                    col_data.get("analysis", "No analysis available") + "\n\n"
+                )
+
         # Save the report
         report_path = os.path.join(analysis_folder, "column_analysis_report.md")
         with open(report_path, "w") as f:
             f.write(report_content)
-            
+
         # Redirect to results page
         return redirect(url_for("view_column_analysis", analysis_id=analysis_id))
-                
+
     except Exception as e:
         logging.error(f"Error analyzing columns: {str(e)}")
-        logging.error(traceback.format_exc())
         flash(f"Error analyzing columns: {str(e)}")
         return redirect(url_for("index"))
+
 
 @app.route("/column-analysis/<analysis_id>")
 def view_column_analysis(analysis_id):
     # Validate analysis ID format to prevent security issues
+    import logging
+
     if not analysis_id or not re.match(r"^[a-zA-Z0-9_\-]+$", analysis_id):
         logging.warning(f"Invalid analysis ID format: {analysis_id}")
         flash("Invalid analysis ID format")
         return redirect(url_for("index"))
-        
+
     analysis_folder = os.path.join(app.config["RESULTS_FOLDER"], analysis_id)
-    
+
     # Check if the analysis folder exists
     if not os.path.exists(analysis_folder):
         flash("Analysis not found")
         return redirect(url_for("index"))
-        
+
     # Load the column analysis results
     try:
         analysis_path = os.path.join(analysis_folder, "column_analysis.json")
         with open(analysis_path, "r") as f:
             column_analysis = json.load(f)
-            
+
         # Load the report for display
         report_path = os.path.join(analysis_folder, "column_analysis_report.md")
         with open(report_path, "r") as f:
             report_content = f.read()
-            
+
         # Convert markdown to HTML
         if HAS_MARKDOWN:
             report_html = markdown.markdown(report_content)
         else:
             report_html = basic_markdown_to_html(report_content)
-            
+
         return render_template(
             "results.html",
             analysis_id=analysis_id,
             report=report_html,
             title="Column Analysis Results",
-            has_suspicious_columns=len(column_analysis['summary']['suspicious_columns']) > 0
+            has_suspicious_columns=len(column_analysis["summary"]["suspicious_columns"])
+            > 0,
         )
     except Exception as e:
         logging.error(f"Error loading column analysis: {str(e)}")
         flash(f"Error loading column analysis: {str(e)}")
         return redirect(url_for("index"))
+
 
 @app.route("/upload", methods=["POST"])
 def upload_file():
@@ -1367,25 +1622,44 @@ def upload_file():
 
         # Process any user-provided suspicions
         user_suspicions = None
-        if any(param in request.form for param in ["description", "focus_columns", "treatment_columns", "outcome_columns", "suspicious_rows", "suspect_grouping"]):
+        if any(
+            param in request.form
+            for param in [
+                "description",
+                "focus_columns",
+                "treatment_columns",
+                "outcome_columns",
+                "suspicious_rows",
+                "suspect_grouping",
+            ]
+        ):
             user_suspicions = {}
-            
+
             # Process text fields
             for field in ["description", "suspect_grouping"]:
                 if field in request.form and request.form[field].strip():
                     user_suspicions[field] = request.form[field].strip()
-            
+
             # Process comma-separated list fields
             for field in ["focus_columns", "treatment_columns", "outcome_columns"]:
                 if field in request.form and request.form[field].strip():
-                    user_suspicions[field] = [col.strip() for col in request.form[field].split(",") if col.strip()]
-            
+                    user_suspicions[field] = [
+                        col.strip()
+                        for col in request.form[field].split(",")
+                        if col.strip()
+                    ]
+
             # Process multi-select fields - use getlist to handle multiple selections
             if "potential_issues" in request.form:
-                user_suspicions["potential_issues"] = request.form.getlist("potential_issues")
-            
+                user_suspicions["potential_issues"] = request.form.getlist(
+                    "potential_issues"
+                )
+
             # Process suspicious rows (handle ranges like "10-20")
-            if "suspicious_rows" in request.form and request.form["suspicious_rows"].strip():
+            if (
+                "suspicious_rows" in request.form
+                and request.form["suspicious_rows"].strip()
+            ):
                 suspicious_rows = []
                 for part in request.form["suspicious_rows"].split(","):
                     part = part.strip()
@@ -1402,31 +1676,33 @@ def upload_file():
                             suspicious_rows.append(int(part))
                         except Exception as e:
                             print(f"Error parsing row index {part}: {e}")
-                
+
                 if suspicious_rows:
                     user_suspicions["suspicious_rows"] = suspicious_rows
-            
+
             # Log what we're passing to the analysis
             if user_suspicions:
-                print(f"Using user-provided suspicions to guide analysis: {json.dumps(user_suspicions, default=str)}")
+                print(
+                    f"Using user-provided suspicions to guide analysis: {json.dumps(user_suspicions, default=str)}"
+                )
 
         # Run analysis - pass the paper path and suspicions if provided
         if has_paper and paper_path:
-            report = detect_data_manipulation(
+            _report = detect_data_manipulation(
                 client,
                 file_path,
                 analysis_folder,
                 paper_path=paper_path,
                 use_claude_segmentation=True,
-                user_suspicions=user_suspicions
+                user_suspicions=user_suspicions,
             )
         else:
-            report = detect_data_manipulation(
-                client, 
-                file_path, 
-                analysis_folder, 
+            _report = detect_data_manipulation(
+                client,
+                file_path,
+                analysis_folder,
                 use_claude_segmentation=True,
-                user_suspicions=user_suspicions
+                user_suspicions=user_suspicions,
             )
 
         # Store original dataset for browsing
@@ -1506,7 +1782,7 @@ def upload_file():
         try:
             logging.error(f"Analysis failed for file {filename}: {str(e)}")
             logging.error(f"Traceback: {error_details}")
-        except:
+        except Exception:
             pass  # Silently handle if logging isn't configured
 
         # Show a more detailed error message to the user
@@ -1523,6 +1799,8 @@ def upload_file():
 @app.route("/results/<analysis_id>")
 def view_results(analysis_id):
     # Validate analysis ID format to prevent security issues
+    import logging
+
     if not analysis_id or not re.match(r"^[a-zA-Z0-9_\-]+$", analysis_id):
         logging.warning(f"Invalid analysis ID format: {analysis_id}")
         flash("Invalid analysis ID format")
@@ -1586,13 +1864,13 @@ def view_results(analysis_id):
             # First block is typically column categories
             try:
                 json_columns = json.loads(json_blocks[0])
-            except:
+            except (json.JSONDecodeError, IndexError, ValueError):
                 json_columns = {}
 
             # Second block is typically findings
             try:
                 json_findings = json.loads(json_blocks[1])
-            except:
+            except (json.JSONDecodeError, IndexError, ValueError):
                 json_findings = []
 
         # Clean up the report content to remove raw JSON blocks
@@ -1631,8 +1909,8 @@ def view_results(analysis_id):
                     ]
                     if sorting_anomalies and "details" in sorting_anomalies[0]:
                         anomaly_count = len(sorting_anomalies[0]["details"])
-                        
-                        # Check if we have any out-of-order analysis 
+
+                        # Check if we have any out-of-order analysis
                         out_of_order_findings = False
                         for anomaly in sorting_anomalies:
                             if "details" in anomaly:
@@ -1642,7 +1920,7 @@ def view_results(analysis_id):
                                         break
                                 if out_of_order_findings:
                                     break
-                                    
+
                         if out_of_order_findings:
                             finding_explanations.append(
                                 f"<li><strong>Sorting Anomalies:</strong> Found {anomaly_count} rows out of sequence, with <span style='color: #dc3545;'>out-of-order observations</span> that strongly suggest manual data manipulation.</li>"
@@ -1676,20 +1954,24 @@ def view_results(analysis_id):
                     finding_explanations.append(
                         "<li><strong>Effect Size Analysis:</strong> Statistical analysis of treatment effects shows unusual patterns.</li>"
                     )
-                    
+
                 if "with_without_comparison" in finding_types:
-                    comparison_findings = [f for f in json_findings if f["type"] == "with_without_comparison"]
+                    comparison_findings = [
+                        f
+                        for f in json_findings
+                        if f["type"] == "with_without_comparison"
+                    ]
                     if comparison_findings and "details" in comparison_findings[0]:
                         details = comparison_findings[0]["details"]
                         suspicious_count = details.get("suspicious_rows_count", 0)
-                        
+
                         # Check if any results show significant changes
                         significant_changes = False
                         for result in details.get("comparison_results", []):
                             if result.get("significance_changed", False):
                                 significant_changes = True
                                 break
-                                
+
                         if significant_changes:
                             finding_explanations.append(
                                 f"<li><strong>Row Comparison Analysis:</strong> <span style='color: #dc3545;'>Removing {suspicious_count} suspicious rows changes statistical significance of results.</span></li>"
@@ -1698,19 +1980,25 @@ def view_results(analysis_id):
                             finding_explanations.append(
                                 f"<li><strong>Row Comparison Analysis:</strong> Comparison of results with and without {suspicious_count} suspicious rows.</li>"
                             )
-                    
+
                 if "claude_detected_anomaly" in finding_types:
-                    claude_findings = [f for f in json_findings if f["type"] == "claude_detected_anomaly"]
+                    claude_findings = [
+                        f
+                        for f in json_findings
+                        if f["type"] == "claude_detected_anomaly"
+                    ]
                     if claude_findings:
                         anomaly_count = len(claude_findings)
-                        
+
                         # Check if we have any out-of-order analysis
                         out_of_order_findings = False
                         for finding in claude_findings:
-                            if finding.get("details") and finding["details"].get("out_of_order_analysis"):
+                            if finding.get("details") and finding["details"].get(
+                                "out_of_order_analysis"
+                            ):
                                 out_of_order_findings = True
                                 break
-                                
+
                         if out_of_order_findings:
                             finding_explanations.append(
                                 f"<li><strong>Claude AI Analysis:</strong> Detected {anomaly_count} anomalies in specific data segments, including <span style='color: #6f42c1;'>out-of-order observations</span> that may indicate manual data manipulation.</li>"
@@ -1719,15 +2007,21 @@ def view_results(analysis_id):
                             finding_explanations.append(
                                 f"<li><strong>Claude AI Analysis:</strong> Detected {anomaly_count} anomalies in specific data segments that may indicate manipulation.</li>"
                             )
-                        
+
                 if "claude_chunk_analysis" in finding_types:
-                    chunk_findings = [f for f in json_findings if f["type"] == "claude_chunk_analysis"]
+                    chunk_findings = [
+                        f for f in json_findings if f["type"] == "claude_chunk_analysis"
+                    ]
                     if chunk_findings and "details" in chunk_findings[0]:
                         detail = chunk_findings[0]["details"]
                         anomaly_count = detail.get("total_anomalies", 0)
                         chunk_count = detail.get("anomaly_chunks", 0)
                         anomaly_types_list = detail.get("anomaly_types", [])
-                        anomaly_types_text = ", ".join(anomaly_types_list) if anomaly_types_list else "various anomalies"
+                        anomaly_types_text = (
+                            ", ".join(anomaly_types_list)
+                            if anomaly_types_list
+                            else "various anomalies"
+                        )
                         finding_explanations.append(
                             f"<li><strong>Claude Segment Analysis:</strong> Found {anomaly_count} high-confidence anomalies ({anomaly_types_text}) across {chunk_count} data segments.</li>"
                         )
@@ -1797,6 +2091,10 @@ def view_results(analysis_id):
         except Exception as e:
             data_preview = f"<div class='alert alert-danger'>Error generating data preview: {str(e)}</div>"
 
+        # Check if this is a sample dataset
+        is_sample = analysis_info.get("is_sample", False)
+        sample_name = analysis_info.get("sample_name", "")
+
         return render_template(
             "results.html",
             analysis=analysis_info,
@@ -1808,6 +2106,8 @@ def view_results(analysis_id):
             json_findings=json_findings,
             json_columns=json_columns,
             data_preview=data_preview,
+            is_sample=is_sample,
+            sample_name=sample_name,
         )
 
     except Exception as e:
@@ -1828,7 +2128,7 @@ def view_results(analysis_id):
         try:
             logging.error(f"Results page failed for analysis {analysis_id}: {str(e)}")
             logging.error(f"Traceback: {error_details}")
-        except:
+        except Exception:
             pass  # Silently handle if logging isn't configured
 
         # Show a more detailed error message to the user
@@ -1888,7 +2188,7 @@ def get_file(analysis_id, filename):
                 from PIL import Image
 
                 Image.open(file_path).verify()  # Just verify it's a valid image
-            except:
+            except Exception:
                 logging.warning(f"Invalid image file: {file_path}")
                 # Continue anyway, as it might be a corrupted image we still want to serve
 
@@ -1903,7 +2203,7 @@ def get_file(analysis_id, filename):
             except TypeError:
                 # Fall back to older Flask versions which didn't have as_attachment
                 return send_from_directory(analysis_folder, filename)
-        except:
+        except Exception:
             # Fall back to basic file serving if Flask's method fails
             from flask import Response
 
