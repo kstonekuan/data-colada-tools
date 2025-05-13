@@ -7,7 +7,11 @@ import re
 import sys
 import uuid
 
+# Use Agg backend for matplotlib to avoid GUI dependencies - must be set before any matplotlib or seaborn imports
 import matplotlib
+matplotlib.use('Agg')
+
+# Core dependencies that don't require visualization
 import numpy as np
 import pandas as pd
 from flask import (
@@ -21,6 +25,7 @@ from flask import (
 )
 from werkzeug.utils import secure_filename
 
+# Import required functions from main - lazy load other dependencies
 from src.main import (
     analyze_column_unique_values,
     detect_data_manipulation,
@@ -56,8 +61,7 @@ except ImportError:
     logging.warning("Markdown package not found, using basic HTML conversion instead")
     HAS_MARKDOWN = False
 
-# Use non-interactive backend to avoid GUI issues
-matplotlib.use("Agg")
+# Matplotlib backend is already set to Agg at the top of the file
 
 
 # Flask app setup
@@ -247,7 +251,9 @@ def use_sample(filename):
                 original_columns = df.columns.tolist()
                 original_data = df.values.tolist()
             elif ext == ".sav":
-                import pyreadstat
+                # Import pyreadstat lazily
+                from src.lazy_imports import get_pyreadstat
+                pyreadstat = get_pyreadstat()
 
                 df, meta = pyreadstat.read_sav(sample_path, encoding=None)
                 original_columns = df.columns.tolist()
@@ -328,7 +334,9 @@ def generate_data_preview(file_path, json_findings):
             df = pd.read_stata(file_path)
         elif ext == ".sav":
             try:
-                import pyreadstat
+                # Import pyreadstat lazily
+                from src.lazy_imports import get_pyreadstat
+                pyreadstat = get_pyreadstat()
 
                 df, meta = pyreadstat.read_sav(file_path, encoding="latin1")
             except ImportError:
@@ -1577,7 +1585,9 @@ def upload_file():
         if filename.lower().endswith(".sav"):
             try:
                 # Test read the file to verify it can be processed
-                import pyreadstat
+                # Import pyreadstat lazily
+                from src.lazy_imports import get_pyreadstat
+                pyreadstat = get_pyreadstat()
 
                 test_df = None
                 encodings = [
@@ -1724,7 +1734,9 @@ def upload_file():
                 original_columns = df.columns.tolist()
                 original_data = df.values.tolist()
             elif ext == ".sav":
-                import pyreadstat
+                # Import pyreadstat lazily to improve startup time
+                from src.lazy_imports import get_pyreadstat
+                pyreadstat = get_pyreadstat()
 
                 df, meta = pyreadstat.read_sav(file_path, encoding=None)
                 original_columns = df.columns.tolist()

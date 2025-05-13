@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import matplotlib.pyplot as plt
-import seaborn as sns
 import pandas as pd
 import numpy as np
 import os
 import tempfile
+
+# Use lazy loading for seaborn which is expensive to import
+from src.lazy_imports import get_seaborn
 
 
 class ForensicVisualizer:
@@ -16,7 +18,8 @@ class ForensicVisualizer:
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        # Set style
+        # Set style - lazy load seaborn
+        sns = get_seaborn()
         sns.set_style("whitegrid")
         plt.rcParams["figure.figsize"] = (12, 8)
 
@@ -60,6 +63,7 @@ class ForensicVisualizer:
             normal_df = df[~suspicious_mask].copy()
 
             # Left plot - suspicious observations
+            sns = get_seaborn()
             sns.boxplot(x=group_col, y=var, data=suspicious_df, ax=axes[i, 0])
             axes[i, 0].set_title(f"Suspicious Observations (n={len(suspicious_df)})")
 
@@ -87,12 +91,14 @@ class ForensicVisualizer:
                     )
 
             # Right plot - normal observations
+            sns = get_seaborn()
             sns.boxplot(x=group_col, y=var, data=normal_df, ax=axes[i, 1])
             axes[i, 1].set_title(f"Normal Observations (n={len(normal_df)})")
 
             # For larger datasets, use smaller point size or sample
             if len(normal_df) > 100:
                 sample_df = normal_df.sample(min(100, len(normal_df)))
+                sns = get_seaborn()
                 sns.swarmplot(
                     x=group_col,
                     y=var,
@@ -102,6 +108,7 @@ class ForensicVisualizer:
                     alpha=0.7,
                 )
             else:
+                sns = get_seaborn()
                 sns.swarmplot(
                     x=group_col,
                     y=var,
@@ -283,6 +290,7 @@ class ForensicVisualizer:
             raw_df = effect_df[
                 effect_df["Effect Size Type"].str.contains("Raw Difference")
             ]
+            sns = get_seaborn()
             sns.barplot(
                 x="Variable", y="Effect Size", hue="Effect Size Type", data=raw_df
             )
@@ -292,6 +300,7 @@ class ForensicVisualizer:
             # Cohen's d
             plt.subplot(1, 2, 2)
             d_df = effect_df[effect_df["Effect Size Type"].str.contains("Cohen's d")]
+            sns = get_seaborn()
             sns.barplot(
                 x="Variable", y="Effect Size", hue="Effect Size Type", data=d_df
             )
@@ -636,6 +645,7 @@ class ForensicVisualizer:
         plt.figure(figsize=(12, 8))
 
         # Plot by group
+        sns = get_seaborn()
         groups = plot_df[group_col].unique()
         colors = sns.color_palette("husl", len(groups))
 

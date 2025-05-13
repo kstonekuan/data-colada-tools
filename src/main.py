@@ -285,7 +285,9 @@ def detect_data_manipulation(
     elif file_ext == ".sav":
         try:
             # Try multiple encodings for SPSS files
-            import pyreadstat
+            # Import pyreadstat lazily to improve startup time
+            from src.lazy_imports import get_pyreadstat
+            pyreadstat = get_pyreadstat()
 
             # Try different encodings
             encodings = [
@@ -485,7 +487,9 @@ def detect_data_manipulation(
     paper_context = ""
     if paper_path and os.path.exists(paper_path):
         try:
-            import PyPDF2
+            # Import PyPDF2 lazily to improve startup time
+            from src.lazy_imports import get_pypdf2
+            PyPDF2 = get_pypdf2()
 
             # Extract text from PDF
             with open(paper_path, "rb") as pdf_file:
