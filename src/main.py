@@ -273,60 +273,23 @@ def detect_data_manipulation(
     # Initialize data forensics
     forensics = DataForensics()
 
-    # Read data based on file type
+    # Load dataset by calling analyze_dataset
+    try:
+        forensics.analyze_dataset(data_path)
+    except Exception as e:
+        error_msg = f"Error loading dataset: {str(e)}"
+        logger.error(error_msg)
+        return error_msg
+
+    # Get dataframe from forensics object
+    df = forensics.df
+    
+    # Create Excel forensics object for deeper analysis if needed
     if file_ext == ".xlsx":
-        df = pd.read_excel(data_path)
-        # Create Excel forensics object for deeper analysis
         excel_forensics = ExcelForensics(data_path)
-    elif file_ext == ".csv":
-        df = pd.read_csv(data_path)
-    elif file_ext == ".dta":
-        df = pd.read_stata(data_path)
-    elif file_ext == ".sav":
-        try:
-            # Try multiple encodings for SPSS files
-            # Import pyreadstat lazily to improve startup time
-            from src.lazy_imports import get_pyreadstat
-            pyreadstat = get_pyreadstat()
-
-            # Try different encodings
-            encodings = [
-                "latin1",
-                "cp1252",
-                None,
-            ]  # None lets pyreadstat try to detect encoding
-            read_success = False
-
-            for encoding in encodings:
-                try:
-                    df, meta = pyreadstat.read_sav(data_path, encoding=encoding)
-                    read_success = True
-                    logger.info(
-                        f"Successfully read SPSS file with encoding: {encoding if encoding else 'auto-detected'}"
-                    )
-                    break
-                except Exception as e:
-                    last_error = str(e)
-                    continue
-
-            if not read_success:
-                error_msg = f"Could not read SPSS file with any encoding: {last_error}"
-                logger.error(error_msg)
-                return error_msg
-        except ImportError:
-            logger.error(
-                "The pyreadstat package is required to read SPSS files. Please install it with 'pip install pyreadstat'"
-            )
-            return "The pyreadstat package is required to read SPSS files. Please install it with 'pip install pyreadstat'"
-    else:
-        logger.error(f"Unsupported file format: {file_ext}")
-        return
 
     # Use Claude to identify column categories
     column_categories = identify_columns(client, df)
-
-    # Always set the DataFrame on the forensics object regardless of whether we have ID/group columns
-    forensics.df = df
 
     # Basic analysis with DataForensics
     findings = []

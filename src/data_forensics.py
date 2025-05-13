@@ -21,6 +21,57 @@ from anthropic import Anthropic
 logger = logging.getLogger(__name__)
 
 
+def _safe_pandas_to_polars(df: pd.DataFrame) -> pl.DataFrame:
+    """Safely convert a pandas DataFrame to a polars DataFrame, handling mixed data types.
+    
+    Args:
+        df: pandas DataFrame to convert
+        
+    Returns:
+        polars DataFrame
+        
+    Raises:
+        ValueError: If conversion fails even after type adjustments
+    """
+    try:
+        # First attempt with default conversion
+        return pl.from_pandas(df)
+    except ValueError as e:
+        logger.warning(f"Initial pandas-to-polars conversion failed: {str(e)}")
+        
+        if "pyarrow is required" in str(e):
+            # Give a more helpful error message for missing pyarrow
+            raise ValueError("pyarrow is required for pandas-to-polars conversion. Please install it with 'pip install pyarrow'") from e
+        elif "Could not convert" in str(e) or "tried to convert to" in str(e):
+            # Handle mixed data types by forcing to strings
+            logger.warning("Handling mixed data types by converting problematic columns to strings")
+            # Make a copy to avoid modifying the original
+            df_copy = df.copy()
+            
+            # Get column names from all dataframes with mixed types
+            for col in df.columns:
+                try:
+                    # Check if this column causes the error
+                    sample = df[col].iloc[0:5]
+                    pl.from_pandas(pd.DataFrame({col: sample}))
+                except ValueError as col_err:
+                    if "Could not convert" in str(col_err) or "tried to convert to" in str(col_err):
+                        # Convert problematic column to string
+                        logger.info(f"Converting column '{col}' to string type")
+                        df_copy[col] = df_copy[col].astype(str)
+            
+            # Try the conversion again with fixed types
+            try:
+                return pl.from_pandas(df_copy)
+            except ValueError as e2:
+                # If it still fails, provide detailed error
+                logger.error(f"Failed to convert pandas DataFrame to polars even after type conversion: {str(e2)}")
+                raise ValueError(f"Failed to convert pandas DataFrame to polars: {str(e2)}. Try opening the file in Excel and saving it with consistent data types.") from e2
+        else:
+            # Re-raise any other value errors
+            raise
+
+
 class DataForensics:
     """Class for detecting potential data manipulation in research datasets."""
 
@@ -83,15 +134,33 @@ class DataForensics:
         # Load data with Polars when possible, fallback to pandas for special formats
         try:
             if ext == ".csv":
-                # Use Polars for CSV files
-                self.df_pl = pl.read_csv(filepath)
-                # Create pandas dataframe for compatibility with existing code
-                self.df = self.df_pl.to_pandas()
+                # Use Polars for CSV files with fallback for encoding issues
+                try:
+                    self.df_pl = pl.read_csv(filepath)
+                    # Create pandas dataframe for compatibility with existing code
+                    self.df = self.df_pl.to_pandas()
+                except Exception as csv_err:
+                    # Handle potential encoding issues by trying pandas first
+                    logger.warning(f"Error reading CSV with polars: {str(csv_err)}. Trying pandas with encoding detection...")
+                    # Try different encodings with pandas
+                    encodings = ['utf-8', 'latin1', 'iso-8859-1', 'cp1252']
+                    for encoding in encodings:
+                        try:
+                            self.df = pd.read_csv(filepath, encoding=encoding)
+                            logger.info(f"Successfully read CSV with pandas using encoding: {encoding}")
+                            # Convert to polars
+                            self.df_pl = _safe_pandas_to_polars(self.df)
+                            break
+                        except Exception as enc_err:
+                            continue
+                    else:
+                        # No encoding worked, raise the original error
+                        raise ValueError(f"Failed to read CSV file with any encoding: {str(csv_err)}")
             elif ext == ".xlsx":
                 # For Excel files, first read with pandas for metadata
                 self.df = pd.read_excel(filepath)
-                # Then convert to polars
-                self.df_pl = pl.from_pandas(self.df)
+                # Convert to polars with special handling for problematic data types
+                self.df_pl = _safe_pandas_to_polars(self.df)
                 self.excel_metadata = self.extract_excel_metadata(filepath)
             elif ext == ".parquet":
                 # Direct polars support for parquet
@@ -100,7 +169,7 @@ class DataForensics:
             elif ext == ".dta":
                 # Use pandas for Stata files, then convert
                 self.df = pd.read_stata(filepath)
-                self.df_pl = pl.from_pandas(self.df)
+                self.df_pl = _safe_pandas_to_polars(self.df)
             elif ext == ".sav":
                 try:
                     import pyreadstat
@@ -120,7 +189,7 @@ class DataForensics:
                             )
                             read_success = True
                             # Convert to polars
-                            self.df_pl = pl.from_pandas(self.df)
+                            self.df_pl = _safe_pandas_to_polars(self.df)
                             break
                         except Exception as e:
                             last_error = str(e)
@@ -141,7 +210,7 @@ class DataForensics:
             if self.df is None and self.df_pl is not None:
                 self.df = self.df_pl.to_pandas()
             elif self.df_pl is None and self.df is not None:
-                self.df_pl = pl.from_pandas(self.df)
+                self.df_pl = _safe_pandas_to_polars(self.df)
 
         except Exception as e:
             raise ValueError(f"Error reading file {filepath}: {str(e)}")
