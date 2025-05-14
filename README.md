@@ -1,5 +1,7 @@
 # Data Colada Tools
 
+> 🚧 **PREVIEW VERSION** - This tool is currently under heavy development. Features may be incomplete or change without notice.
+
 A tool for detecting data manipulation in academic research using Anthropic's Claude AI.
 
 This system is inspired by the investigative techniques described in the ["Data Colada"](https://datacolada.org/) blog series, which uncovered evidence of fraud in multiple academic papers.
@@ -69,7 +71,7 @@ Run the Flask web application:
 python app.py
 ```
 
-Access the web interface at http://127.0.0.1:5000/
+Access the web interface at http://localhost:3000/
 
 #### Using the Web Interface
 
