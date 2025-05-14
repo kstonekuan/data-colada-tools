@@ -17,3 +17,4 @@ PyPDF2>=3.0.0
 ruff>=0.1.6
 scikit-learn>=1.0.0
 biopython>=1.79
+setuptools>=65.0.0
