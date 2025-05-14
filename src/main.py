@@ -10,11 +10,23 @@ import numpy as np
 import pandas as pd
 from anthropic import Anthropic
 
-from src.data_forensics import DataForensics, ExcelForensics
-from src.visualize import ForensicVisualizer
-
 # Set up module logger
 logger = logging.getLogger(__name__)
+
+try:
+    # First try to import our improved version
+    from src.data_forensics_improved import DataForensics, ExcelForensics
+    logger.info("Using improved data forensics implementation")
+except ImportError:
+    try:
+        # Then try our fixed version
+        from src.data_forensics_fixed import DataForensics, ExcelForensics
+        logger.info("Using fixed data forensics implementation")
+    except ImportError:
+        # Fall back to the original version
+        from src.data_forensics import DataForensics, ExcelForensics
+        logger.info("Using original data forensics implementation")
+from src.visualize import ForensicVisualizer
 
 
 def load_config() -> Dict[str, str]:
@@ -333,6 +345,8 @@ def detect_data_manipulation(
                     suspicious_rows = [
                         int(issue["row_index"]) for issue in sorting_issues
                     ]
+                    # For Excel analysis, we need to adjust row numbers to account for Excel's 1-based indexing
+                    logger.info(f"Checking for Excel row movements in rows: {suspicious_rows}")
                     movement_evidence = ef.analyze_row_movement(suspicious_rows)
 
                     if movement_evidence:
