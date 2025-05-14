@@ -9,7 +9,8 @@ import uuid
 
 # Use Agg backend for matplotlib to avoid GUI dependencies - must be set before any matplotlib or seaborn imports
 import matplotlib
-matplotlib.use('Agg')
+
+matplotlib.use("Agg")
 
 # Core dependencies that don't require visualization
 import numpy as np
@@ -253,6 +254,7 @@ def use_sample(filename):
             elif ext == ".sav":
                 # Import pyreadstat lazily
                 from src.lazy_imports import get_pyreadstat
+
                 pyreadstat = get_pyreadstat()
 
                 df, meta = pyreadstat.read_sav(sample_path, encoding=None)
@@ -336,6 +338,7 @@ def generate_data_preview(file_path, json_findings):
             try:
                 # Import pyreadstat lazily
                 from src.lazy_imports import get_pyreadstat
+
                 pyreadstat = get_pyreadstat()
 
                 df, meta = pyreadstat.read_sav(file_path, encoding="latin1")
@@ -1587,6 +1590,7 @@ def upload_file():
                 # Test read the file to verify it can be processed
                 # Import pyreadstat lazily
                 from src.lazy_imports import get_pyreadstat
+
                 pyreadstat = get_pyreadstat()
 
                 test_df = None
@@ -1736,6 +1740,7 @@ def upload_file():
             elif ext == ".sav":
                 # Import pyreadstat lazily to improve startup time
                 from src.lazy_imports import get_pyreadstat
+
                 pyreadstat = get_pyreadstat()
 
                 df, meta = pyreadstat.read_sav(file_path, encoding=None)
@@ -2253,5 +2258,5 @@ if __name__ == "__main__":
     logging.info(f"Results folder: {app.config['RESULTS_FOLDER']}")
     logging.info("=" * 50)
 
-    # Fix the duplicate app.run call issue
-    app.run(debug=True)
+    # Run the app on 0.0.0.0 to make it accessible from other machines
+    app.run(host="0.0.0.0", port=3000, debug=True)

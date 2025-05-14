@@ -2,7 +2,10 @@
 
 {% block content %}
 <div class="jumbotron">
-    <h1 class="display-5">Data Colada Tools</h1>
+    <h1 class="display-5">
+        <img src="{{ url_for('static', filename='logo.png') }}" alt="Data Colada Tools Logo" height="45" class="d-inline-block align-top me-2">
+        Data Colada Tools
+    </h1>
     <h2 class="h4 text-muted mb-3">Building Confidence in Science</h2>
     <p class="lead">
         Upload your dataset to detect potential data manipulation patterns.

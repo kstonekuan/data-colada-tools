@@ -13,64 +13,11 @@ from typing import Any, Dict, List, Optional, Union
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import polars as pl
 import seaborn as sns
 from anthropic import Anthropic
 
 # Set up module logger
 logger = logging.getLogger(__name__)
-
-
-def _safe_pandas_to_polars(df: pd.DataFrame) -> pl.DataFrame:
-    """Safely convert a pandas DataFrame to a polars DataFrame, handling mixed data types.
-    
-    Args:
-        df: pandas DataFrame to convert
-        
-    Returns:
-        polars DataFrame
-        
-    Raises:
-        ValueError: If conversion fails even after type adjustments
-    """
-    try:
-        # First attempt with default conversion
-        return pl.from_pandas(df)
-    except ValueError as e:
-        logger.warning(f"Initial pandas-to-polars conversion failed: {str(e)}")
-        
-        if "pyarrow is required" in str(e):
-            # Give a more helpful error message for missing pyarrow
-            raise ValueError("pyarrow is required for pandas-to-polars conversion. Please install it with 'pip install pyarrow'") from e
-        elif "Could not convert" in str(e) or "tried to convert to" in str(e):
-            # Handle mixed data types by forcing to strings
-            logger.warning("Handling mixed data types by converting problematic columns to strings")
-            # Make a copy to avoid modifying the original
-            df_copy = df.copy()
-            
-            # Get column names from all dataframes with mixed types
-            for col in df.columns:
-                try:
-                    # Check if this column causes the error
-                    sample = df[col].iloc[0:5]
-                    pl.from_pandas(pd.DataFrame({col: sample}))
-                except ValueError as col_err:
-                    if "Could not convert" in str(col_err) or "tried to convert to" in str(col_err):
-                        # Convert problematic column to string
-                        logger.info(f"Converting column '{col}' to string type")
-                        df_copy[col] = df_copy[col].astype(str)
-            
-            # Try the conversion again with fixed types
-            try:
-                return pl.from_pandas(df_copy)
-            except ValueError as e2:
-                # If it still fails, provide detailed error
-                logger.error(f"Failed to convert pandas DataFrame to polars even after type conversion: {str(e2)}")
-                raise ValueError(f"Failed to convert pandas DataFrame to polars: {str(e2)}. Try opening the file in Excel and saving it with consistent data types.") from e2
-        else:
-            # Re-raise any other value errors
-            raise
-
 
 class DataForensics:
     """Class for detecting potential data manipulation in research datasets."""
@@ -79,10 +26,7 @@ class DataForensics:
         """Initialize the DataForensics object."""
         self.findings: List[Dict[str, Any]] = []
         self.plots: List[Dict[str, Any]] = []
-        self.df_pl: Optional[pl.DataFrame] = None  # Polars DataFrame
-        self.df: Optional[pd.DataFrame] = (
-            None  # Also keep pandas DataFrame for compatibility
-        )
+        self.df: Optional[pd.DataFrame] = None  # Pandas DataFrame
         self.excel_metadata: Optional[Dict[str, List[Dict[str, Any]]]] = None
 
     def analyze_dataset(
@@ -131,45 +75,31 @@ class DataForensics:
         # Determine file type and read data
         ext = os.path.splitext(filepath)[1].lower()
 
-        # Load data with Polars when possible, fallback to pandas for special formats
+        # Load data with pandas
         try:
             if ext == ".csv":
-                # Use Polars for CSV files with fallback for encoding issues
-                try:
-                    self.df_pl = pl.read_csv(filepath)
-                    # Create pandas dataframe for compatibility with existing code
-                    self.df = self.df_pl.to_pandas()
-                except Exception as csv_err:
-                    # Handle potential encoding issues by trying pandas first
-                    logger.warning(f"Error reading CSV with polars: {str(csv_err)}. Trying pandas with encoding detection...")
-                    # Try different encodings with pandas
-                    encodings = ['utf-8', 'latin1', 'iso-8859-1', 'cp1252']
-                    for encoding in encodings:
-                        try:
-                            self.df = pd.read_csv(filepath, encoding=encoding)
-                            logger.info(f"Successfully read CSV with pandas using encoding: {encoding}")
-                            # Convert to polars
-                            self.df_pl = _safe_pandas_to_polars(self.df)
-                            break
-                        except Exception as enc_err:
-                            continue
-                    else:
-                        # No encoding worked, raise the original error
-                        raise ValueError(f"Failed to read CSV file with any encoding: {str(csv_err)}")
+                # Try different encodings with pandas
+                encodings = ['utf-8', 'latin1', 'iso-8859-1', 'cp1252']
+                for encoding in encodings:
+                    try:
+                        self.df = pd.read_csv(filepath, encoding=encoding)
+                        logger.info(f"Successfully read CSV with pandas using encoding: {encoding}")
+                        break
+                    except Exception as enc_err:
+                        continue
+                else:
+                    # No encoding worked, raise error
+                    raise ValueError(f"Failed to read CSV file with any encoding")
             elif ext == ".xlsx":
-                # For Excel files, first read with pandas for metadata
+                # For Excel files, read with pandas and extract metadata
                 self.df = pd.read_excel(filepath)
-                # Convert to polars with special handling for problematic data types
-                self.df_pl = _safe_pandas_to_polars(self.df)
                 self.excel_metadata = self.extract_excel_metadata(filepath)
             elif ext == ".parquet":
-                # Direct polars support for parquet
-                self.df_pl = pl.read_parquet(filepath)
-                self.df = self.df_pl.to_pandas()
+                # Use pandas for parquet
+                self.df = pd.read_parquet(filepath)
             elif ext == ".dta":
-                # Use pandas for Stata files, then convert
+                # Use pandas for Stata files
                 self.df = pd.read_stata(filepath)
-                self.df_pl = _safe_pandas_to_polars(self.df)
             elif ext == ".sav":
                 try:
                     import pyreadstat
@@ -188,8 +118,6 @@ class DataForensics:
                                 filepath, encoding=encoding
                             )
                             read_success = True
-                            # Convert to polars
-                            self.df_pl = _safe_pandas_to_polars(self.df)
                             break
                         except Exception as e:
                             last_error = str(e)
@@ -205,12 +133,6 @@ class DataForensics:
                     )
             else:
                 raise ValueError(f"Unsupported file format: {ext}")
-
-            # Ensure we have both pandas and polars dataframes available
-            if self.df is None and self.df_pl is not None:
-                self.df = self.df_pl.to_pandas()
-            elif self.df_pl is None and self.df is not None:
-                self.df_pl = _safe_pandas_to_polars(self.df)
 
         except Exception as e:
             raise ValueError(f"Error reading file {filepath}: {str(e)}")
@@ -292,11 +214,11 @@ class DataForensics:
         Returns:
             Dictionary mapping column names to analysis results
         """
-        if self.df_pl is None:
+        if self.df is None:
             raise ValueError("No dataset loaded. Call analyze_dataset first.")
 
         # Use all columns if none specified
-        available_columns = self.df_pl.columns
+        available_columns = self.df.columns
         if columns is None:
             columns = available_columns
         elif not all(col in available_columns for col in columns):
@@ -306,9 +228,8 @@ class DataForensics:
         results = {}
 
         for column in columns:
-            # Use Polars to get unique values - much faster than pandas
-            unique_values_pl = self.df_pl.select(pl.col(column)).unique()
-            unique_values = unique_values_pl.to_series().to_numpy()
+            # Get unique values using pandas
+            unique_values = self.df[column].unique()
             unique_count = len(unique_values)
 
             # Limit to 100 values if there are too many
@@ -340,8 +261,8 @@ class DataForensics:
                 else:
                     values_str.append(repr(val))
 
-            # Get data type using Polars
-            col_dtype = self.df_pl.schema[column]
+            # Get data type using pandas
+            col_dtype = self.df[column].dtype
 
             # Create a prompt for Claude to analyze this column's unique values
             prompt = f"""Analyze the following unique values from the column '{column}' in a research dataset.
@@ -418,7 +339,7 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
         Returns:
             List of sorting anomalies found with enhanced out-of-order analysis
         """
-        if self.df_pl is None:
+        if self.df is None:
             raise ValueError("No dataset loaded. Call analyze_dataset first.")
 
         anomalies = []
@@ -430,27 +351,8 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
         if check_dependent_vars:
             sort_cols_list = [sort_cols] if isinstance(sort_cols, str) else sort_cols
 
-            # Get numeric columns using Polars
-            numeric_dtypes = [
-                pl.Float32,
-                pl.Float64,
-                pl.Int8,
-                pl.Int16,
-                pl.Int32,
-                pl.Int64,
-                pl.UInt8,
-                pl.UInt16,
-                pl.UInt32,
-                pl.UInt64,
-            ]
-
-            # Find numeric columns
-            schema = self.df_pl.schema
-            numeric_cols = [
-                col_name
-                for col_name, dtype in schema.items()
-                if any(isinstance(dtype, t) for t in numeric_dtypes)
-            ]
+            # Find numeric columns using pandas
+            numeric_cols = list(self.df.select_dtypes(include=['number']).columns)
 
             # Get all potential dependent variables
             dependent_vars = [
@@ -462,7 +364,7 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
             # If user provided specific columns to prioritize, check those first
             if prioritize_columns:
                 # Filter to ensure we only include columns that exist and are numeric
-                available_columns = self.df_pl.columns
+                available_columns = self.df.columns
                 prioritized_vars = [
                     col
                     for col in prioritize_columns
@@ -485,23 +387,23 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
         if isinstance(sort_cols, str):
             sort_cols = [sort_cols]
 
-        # Process each sort column - this is significantly faster with Polars
+        # Process each sort column
         for col in sort_cols:
-            # Get unique values efficiently with Polars
-            unique_vals = self.df_pl.select(pl.col(col)).unique().to_series().to_list()
+            # Get unique values using pandas
+            unique_vals = self.df[col].unique().tolist()
 
             for val in unique_vals:
-                # Get rows for this value using Polars filter
-                subset_pl = self.df_pl.filter(pl.col(col) == val)
+                # Get rows for this value using pandas
+                subset = self.df[self.df[col] == val]
 
-                # Add row indices for better tracking
-                subset_pl = subset_pl.with_row_count("_row_idx")
+                # The subset already has row indices via the index
 
                 # Sort by ID to make it easier to find anomalies
-                sorted_subset = subset_pl.sort(id_col)
+                sorted_subset = subset.sort_values(id_col)
 
-                # Get the ID and row index columns
-                id_vals = sorted_subset.select([id_col, "_row_idx"]).to_pandas()
+                # Get the ID column and create a row index column
+                # Reset the index and rename it to _row_idx to maintain compatibility
+                id_vals = sorted_subset[[id_col]].reset_index().rename(columns={'index': '_row_idx'})
 
                 # Find out-of-sequence IDs
                 if len(id_vals) > 1:
@@ -512,7 +414,7 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
                     anomaly_rows = id_vals[id_vals["id_diff"] < 0]
 
                     for _, row in anomaly_rows.iterrows():
-                        row_idx = int(row["_row_idx"])
+                        row_idx = int(row["_row_idx"])  # This is the original dataframe index
                         current_id = row[id_col]
 
                         # Get previous ID value
@@ -536,9 +438,8 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
                             else val,
                         }
 
-                        # Convert subset_pl to pandas DataFrame for compatibility with existing analysis function
-                        # In the future, this function could be rewritten to use Polars as well
-                        subset_pd = subset_pl.to_pandas()
+                        # Use the pandas DataFrame for analysis
+                        subset_pd = subset
 
                         # Check if dependent variables also follow an unusual pattern within this group
                         if dependent_vars:
@@ -591,7 +492,8 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
             return None
 
         # Get the row that's out of order
-        row_position = subset.index.get_loc(row_idx)
+        # Find the position where subset.index equals row_idx
+        row_position = subset.index.tolist().index(row_idx)
 
         # Check each dependent variable - prioritize the ones specified by the user
         for var in dependent_vars:
@@ -816,40 +718,31 @@ Format this exactly as: "SUSPICION_RATING: [1-10]"
         Returns:
             List of duplicate ID findings
         """
-        # Use Polars for much faster duplicate detection
-        if self.df_pl is None:
+        # Use pandas for duplicate detection
+        if self.df is None:
             raise ValueError("No dataset loaded")
 
-        # Group by ID and count occurrences
+        # Group by ID and count occurrences with pandas
         counts = (
-            self.df_pl.select(pl.col(id_col))
-            .group_by(id_col)
-            .agg(pl.count().alias("count"))
-            .filter(pl.col("count") > 1)
-            .sort("count", descending=True)
+            self.df[id_col].value_counts()
+            .reset_index()
+            .rename(columns={id_col: id_col, 'count': 'count'})
+            .query('count > 1')
+            .sort_values('count', ascending=False)
         )
 
         duplicate_details = []
 
         # For each duplicate ID, get details
-        for row in counts.iter_rows(named=True):
+        for index, row in counts.iterrows():
             dup_id = row[id_col]
             count = row["count"]
 
             # Find row indices with this duplicate ID
             # Convert to integers list for serialization
-            rows_df = self.df_pl.filter(pl.col(id_col) == dup_id)
-            try:
-                # For Polars >= 0.19.0
-                row_indices = [int(idx) for idx in rows_df.row_nums()]
-            except AttributeError:
-                # Fallback for older Polars versions
-                # Create a temporary dataframe with row indices
-                temp_df = self.df_pl.with_row_count("_row_idx")
-                filtered = temp_df.filter(pl.col(id_col) == dup_id)
-                row_indices = [
-                    int(idx) for idx in filtered.select("_row_idx").to_series()
-                ]
+            rows_df = self.df[self.df[id_col] == dup_id]
+            # Get row indices using pandas
+            row_indices = rows_df.index.tolist()
 
             # Convert ID to int if it looks like an integer
             if isinstance(dup_id, (int, np.integer)):
@@ -2877,19 +2770,30 @@ class ExcelForensics:
 
         calc_chain_path = os.path.join(self.temp_dir, "xl", "calcChain.xml")
         if os.path.exists(calc_chain_path):
-            # Parse XML
-            tree = ET.parse(calc_chain_path)
-            root = tree.getroot()
+            try:
+                # Parse XML
+                tree = ET.parse(calc_chain_path)
+                root = tree.getroot()
 
-            # Process calculation chain entries
-            for c in root.findall(".//{*}c"):
-                ref = c.get("r")
-                if ref:
-                    # Convert Excel cell reference to row and column
-                    col_str = "".join(filter(str.isalpha, ref))
-                    row_num = int("".join(filter(str.isdigit, ref)))
+                # Get namespace if present
+                ns = root.tag.split('}')[0] + '}' if '}' in root.tag else ''
+                c_tag = f"{ns}c" if ns else "c"
 
-                    self.calc_chain.append({"ref": ref, "row": row_num, "col": col_str})
+                # Process calculation chain entries
+                for c in root.findall(f".//{c_tag}"):
+                    ref = c.get("r")
+                    if ref:
+                        # Convert Excel cell reference to row and column
+                        col_str = "".join(filter(str.isalpha, ref))
+                        row_num = int("".join(filter(str.isdigit, ref)))
+
+                        self.calc_chain.append({"ref": ref, "row": row_num, "col": col_str})
+                
+                logger.info(f"Parsed calc chain with {len(self.calc_chain)} entries")
+            except Exception as e:
+                logger.error(f"Error parsing calc chain: {str(e)}")
+                # Return empty list but don't crash
+                self.calc_chain = []
         else:
             logger.info("No calculation chain found in this Excel file.")
 
@@ -2905,39 +2809,56 @@ class ExcelForensics:
         """
         findings = []
 
-        # Group calc chain entries by row
-        row_entries = {}
-        for entry in self.calc_chain:
-            row = entry["row"]
-            if row not in row_entries:
-                row_entries[row] = []
-            row_entries[row].append(entry)
+        # If there's no calc chain data, return empty findings
+        if not self.calc_chain:
+            logger.warning("No calculation chain data available to analyze row movement")
+            return findings
 
-        # Find the position of each row in the calculation chain
-        for row in row_numbers:
-            if row not in row_entries:
-                continue
+        try:
+            # Group calc chain entries by row
+            row_entries = {}
+            for entry in self.calc_chain:
+                row = entry["row"]
+                if row not in row_entries:
+                    row_entries[row] = []
+                row_entries[row].append(entry)
 
-            entries = row_entries[row]
+            logger.info(f"Analyzing {len(row_numbers)} suspicious rows, found data for {len(row_entries)} rows in calc chain")
 
-            # For each entry in this row, find adjacent entries in the chain
-            for entry in entries:
-                idx = self.calc_chain.index(entry)
+            # Find the position of each row in the calculation chain
+            for row in row_numbers:
+                if row not in row_entries:
+                    continue
 
-                # Check entries before and after
-                if idx > 0 and idx < len(self.calc_chain) - 1:
-                    prev_entry = self.calc_chain[idx - 1]
-                    next_entry = self.calc_chain[idx + 1]
+                entries = row_entries[row]
+                logger.info(f"Row {row} has {len(entries)} entries in calc chain")
 
-                    # If adjacent entries are from different rows, it might indicate movement
-                    if prev_entry["row"] != row and next_entry["row"] != row:
-                        if abs(prev_entry["row"] - next_entry["row"]) == 1:
-                            findings.append(
-                                {
-                                    "row": row,
-                                    "evidence": f"Cell {entry['ref']} calculation is between rows {prev_entry['row']} and {next_entry['row']}",
-                                    "likely_original_position": f"between rows {prev_entry['row']} and {next_entry['row']}",
-                                }
-                            )
+                # For each entry in this row, find adjacent entries in the chain
+                for entry in entries:
+                    try:
+                        idx = self.calc_chain.index(entry)
+
+                        # Check entries before and after
+                        if idx > 0 and idx < len(self.calc_chain) - 1:
+                            prev_entry = self.calc_chain[idx - 1]
+                            next_entry = self.calc_chain[idx + 1]
+
+                            # If adjacent entries are from different rows, it might indicate movement
+                            if prev_entry["row"] != row and next_entry["row"] != row:
+                                if abs(prev_entry["row"] - next_entry["row"]) == 1:
+                                    findings.append(
+                                        {
+                                            "row": row,
+                                            "evidence": f"Cell {entry['ref']} calculation is between rows {prev_entry['row']} and {next_entry['row']}",
+                                            "likely_original_position": f"between rows {prev_entry['row']} and {next_entry['row']}",
+                                        }
+                                    )
+                    except ValueError:
+                        # Skip if entry not found in calc_chain
+                        continue
+                    except Exception as e:
+                        logger.error(f"Error analyzing entry {entry} for row {row}: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error in analyze_row_movement: {str(e)}")
 
         return findings
