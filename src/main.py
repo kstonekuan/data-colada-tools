@@ -10,23 +10,15 @@ import numpy as np
 import pandas as pd
 from anthropic import Anthropic
 
+# Import forensics modules
+from src.data_forensics import DataForensics
+from src.excel_forensics import ExcelForensics
+from src.sorting_forensics import SortingForensics
+from src.statistical_forensics import StatisticalForensics
+from src.visualize import ForensicVisualizer
+
 # Set up module logger
 logger = logging.getLogger(__name__)
-
-try:
-    # First try to import our improved version
-    from src.data_forensics_improved import DataForensics, ExcelForensics
-    logger.info("Using improved data forensics implementation")
-except ImportError:
-    try:
-        # Then try our fixed version
-        from src.data_forensics_fixed import DataForensics, ExcelForensics
-        logger.info("Using fixed data forensics implementation")
-    except ImportError:
-        # Fall back to the original version
-        from src.data_forensics import DataForensics, ExcelForensics
-        logger.info("Using original data forensics implementation")
-from src.visualize import ForensicVisualizer
 
 
 def load_config() -> Dict[str, str]:
@@ -225,15 +217,19 @@ def analyze_column_unique_values(
             output_dir, f"column_analysis_{os.path.basename(data_path)}.json"
         )
         with open(report_path, "w") as f:
-            # Handle numpy types by converting to Python types
+            # Use the enhanced JSON serializer to handle all types
             def json_serializer(obj):
-                if isinstance(obj, np.integer):
-                    return int(obj)
-                if isinstance(obj, np.floating):
+                if isinstance(obj, (np.integer, int, float)):
+                    return int(obj) if isinstance(obj, np.integer) else obj
+                if isinstance(obj, (np.floating, float)):
                     return float(obj)
-                if isinstance(obj, np.ndarray):
+                if isinstance(obj, (np.ndarray,)):
                     return obj.tolist()
-                raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+                if isinstance(obj, (np.bool_, bool)):
+                    return str(
+                        obj
+                    ).lower()  # Convert boolean to string "true" or "false"
+                return str(obj)  # Convert any other types to strings
 
             json.dump(results, f, indent=2, default=json_serializer)
         logger.info(f"Column analysis saved to {report_path}")
@@ -295,8 +291,15 @@ def detect_data_manipulation(
 
     # Get dataframe from forensics object
     df = forensics.df
-    
+
+    # Create sorting forensics object
+    sorting_forensics = SortingForensics(df)
+
+    # Create statistical forensics object
+    statistical_forensics = StatisticalForensics(df)
+
     # Create Excel forensics object for deeper analysis if needed
+    excel_forensics = None
     if file_ext == ".xlsx":
         excel_forensics = ExcelForensics(data_path)
 
@@ -320,7 +323,7 @@ def detect_data_manipulation(
             logger.info(
                 "Using user-provided suspicions to guide (but not bias) analysis"
             )
-            sorting_issues = forensics.check_sorting_anomalies(
+            sorting_issues = sorting_forensics.check_sorting_anomalies(
                 id_col,
                 group_col,
                 check_dependent_vars=True,
@@ -333,20 +336,24 @@ def detect_data_manipulation(
                 ),
             )
         else:
-            sorting_issues = forensics.check_sorting_anomalies(id_col, group_col)
+            sorting_issues = sorting_forensics.check_sorting_anomalies(
+                id_col, group_col
+            )
 
         if sorting_issues:
             findings.append({"type": "sorting_anomaly", "details": sorting_issues})
             logger.info(f"Found {len(sorting_issues)} sorting anomalies")
 
             # If Excel file, check calc chain for evidence of row movement
-            if file_ext == ".xlsx":
+            if file_ext == ".xlsx" and excel_forensics:
                 with excel_forensics as ef:
                     suspicious_rows = [
                         int(issue["row_index"]) for issue in sorting_issues
                     ]
                     # For Excel analysis, we need to adjust row numbers to account for Excel's 1-based indexing
-                    logger.info(f"Checking for Excel row movements in rows: {suspicious_rows}")
+                    logger.info(
+                        f"Checking for Excel row movements in rows: {suspicious_rows}"
+                    )
                     movement_evidence = ef.analyze_row_movement(suspicious_rows)
 
                     if movement_evidence:
@@ -405,6 +412,88 @@ def detect_data_manipulation(
             findings.append({"type": "duplicate_ids", "details": duplicate_ids})
             logger.info(f"Found {len(duplicate_ids)} duplicate IDs")
 
+    # Check for terminal digit anomalies if there are outcome columns
+    if column_categories["outcome_columns"]:
+        terminal_digit_results = statistical_forensics.analyze_terminal_digits(
+            column_categories["outcome_columns"]
+        )
+
+        # Filter to just suspicious columns
+        suspicious_terminal_digits = {
+            col: result
+            for col, result in terminal_digit_results.items()
+            if "suspicion" in result and result["suspicion"] in ["medium", "high"]
+        }
+
+        if suspicious_terminal_digits:
+            findings.append(
+                {
+                    "type": "terminal_digit_anomaly",
+                    "details": suspicious_terminal_digits,
+                }
+            )
+            logger.info(
+                f"Found terminal digit anomalies in {len(suspicious_terminal_digits)} columns"
+            )
+
+    # Check for distribution anomalies (multimodality)
+    if column_categories["outcome_columns"] and column_categories["group_columns"]:
+        multimodal_results = statistical_forensics.detect_multimodality(
+            column_categories["outcome_columns"],
+            by_group=column_categories["group_columns"][0],
+        )
+
+        # Filter to just suspicious columns
+        suspicious_distributions = {}
+        for col, result in multimodal_results.items():
+            if isinstance(result, dict) and "suspicion" in result:
+                if result["suspicion"] in ["medium", "high"]:
+                    suspicious_distributions[col] = result
+            elif isinstance(result, dict):  # Group results
+                suspicious_groups = {
+                    group: group_result
+                    for group, group_result in result.items()
+                    if "suspicion" in group_result
+                    and group_result["suspicion"] in ["medium", "high"]
+                }
+                if suspicious_groups:
+                    suspicious_distributions[col] = suspicious_groups
+
+        if suspicious_distributions:
+            findings.append(
+                {"type": "distribution_anomaly", "details": suspicious_distributions}
+            )
+            logger.info(
+                f"Found distribution anomalies in {len(suspicious_distributions)} columns"
+            )
+
+    # Check for inlier anomalies
+    if column_categories["outcome_columns"] and column_categories["group_columns"]:
+        inlier_results = statistical_forensics.check_inlier_anomalies(
+            column_categories["outcome_columns"],
+            by_group=column_categories["group_columns"][0],
+        )
+
+        # Filter to just suspicious columns
+        suspicious_inliers = {}
+        for col, result in inlier_results.items():
+            if isinstance(result, dict) and "suspicion" in result:
+                if result["suspicion"] in ["medium", "high"]:
+                    suspicious_inliers[col] = result
+            elif isinstance(result, dict):  # Group results
+                suspicious_groups = {
+                    group: group_result
+                    for group, group_result in result.items()
+                    if "suspicion" in group_result
+                    and group_result["suspicion"] in ["medium", "high"]
+                }
+                if suspicious_groups:
+                    suspicious_inliers[col] = suspicious_groups
+
+        if suspicious_inliers:
+            findings.append({"type": "inlier_anomaly", "details": suspicious_inliers})
+            logger.info(f"Found inlier anomalies in {len(suspicious_inliers)} columns")
+
     # Use Claude to analyze data in segments if requested
     claude_segment_findings = []
     if use_claude_segmentation:
@@ -458,7 +547,30 @@ def detect_data_manipulation(
                 )
 
     # Generate Claude prompt with findings
-    findings_json = json.dumps(findings, indent=2)
+    # Define a custom JSON serializer to handle non-serializable types
+    def custom_json_serializer(obj):
+        if isinstance(obj, (np.integer, int, float)):
+            return int(obj) if isinstance(obj, np.integer) else obj
+        elif isinstance(obj, (np.floating, float)):
+            return float(obj)
+        elif isinstance(obj, (np.ndarray,)):
+            return obj.tolist()
+        elif isinstance(obj, (np.bool_, bool)):
+            return str(obj).lower()  # Convert boolean to string "true" or "false"
+        elif isinstance(obj, dict):
+            return {k: custom_json_serializer(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [custom_json_serializer(item) for item in obj]
+        elif isinstance(obj, tuple):
+            return tuple(custom_json_serializer(item) for item in obj)
+        elif obj is None:
+            return None
+        else:
+            return str(obj)  # Convert any other types to strings
+
+    # Apply the custom serializer to the findings data
+    serialized_findings = custom_json_serializer(findings)
+    findings_json = json.dumps(serialized_findings, indent=2)
 
     # Extract text from research paper if provided
     paper_context = ""
@@ -466,6 +578,7 @@ def detect_data_manipulation(
         try:
             # Import PyPDF2 lazily to improve startup time
             from src.lazy_imports import get_pypdf2
+
             PyPDF2 = get_pypdf2()
 
             # Extract text from PDF
@@ -574,15 +687,13 @@ Your assessment:"""
     logger.info("Generating forensic analysis with Claude...")
     try:
         response = client.messages.create(
-            model="claude-3-7-sonnet-latest",
+            model="claude-3-5-haiku-latest",
             max_tokens=4096,
             messages=[{"role": "user", "content": prompt}],
         )
 
         analysis = response.content[0].text
     except Exception as e:
-        import traceback
-
         error_details = traceback.format_exc()
 
         # Create a highly visible error message in the server logs
@@ -604,16 +715,20 @@ Please review the technical findings and visualizations to make your own assessm
 """
 
     # Generate report
+    # Use custom serializer for column categories too
+    serialized_column_categories = custom_json_serializer(column_categories)
+    column_categories_json = json.dumps(serialized_column_categories, indent=2)
+
     report = f"""# Data Forensics Report: {os.path.basename(data_path)}
 
 ## Column Categories
 ```json
-{json.dumps(column_categories, indent=2)}
+{column_categories_json}
 ```
 
 ## Technical Findings
 ```json
-{json.dumps(findings, indent=2)}
+{findings_json}
 ```
 
 ## Claude's Analysis

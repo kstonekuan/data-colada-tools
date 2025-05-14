@@ -299,10 +299,10 @@
                                                     {% for item in finding.details %}
                                                     <tr>
                                                         <td>{{ item.column }}</td>
-                                                        <td>{{ item.chi_square|round(2) }}</td>
-                                                        <td>{{ item.p_value|round(6) }}</td>
-                                                        <td>{{ item.overrepresented_digits|join(', ') }}</td>
-                                                        <td>{{ item.underrepresented_digits|join(', ') }}</td>
+                                                        <td>{{ item.chi_square|default('N/A') if item.chi_square is string else (item.chi_square|default(0)|round(2)) }}</td>
+                                                        <td>{{ item.p_value|default('N/A') if item.p_value is string else (item.p_value|default(0)|round(6)) }}</td>
+                                                        <td>{{ item.overrepresented_digits|default([])|join(', ') }}</td>
+                                                        <td>{{ item.underrepresented_digits|default([])|join(', ') }}</td>
                                                     </tr>
                                                     {% endfor %}
                                                 </tbody>

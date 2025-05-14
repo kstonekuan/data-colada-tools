@@ -370,10 +370,12 @@ def generate_data_preview(file_path, json_findings):
             if finding["type"] == "sorting_anomaly":
                 for anomaly in finding["details"]:
                     row_idx = int(anomaly["row_index"])  # Ensure it's an integer
-                    id_val = anomaly["id"]
-                    prev_id = anomaly["previous_id"]
-                    sort_col = anomaly["sort_column"]
-                    sort_val = anomaly["sort_value"]
+                    id_val = anomaly.get("id_value", "Unknown")  # Use "id_value" key with fallback
+                    prev_id = anomaly.get("previous_id", None)   # Use with fallback
+                    
+                    # These fields might not be present in our updated structure
+                    sort_col = anomaly.get("sort_column", "Unknown")
+                    sort_val = anomaly.get("sort_value", "Unknown")
 
                     print(f"Found sorting anomaly at row {row_idx}")
 
@@ -490,8 +492,10 @@ def generate_data_preview(file_path, json_findings):
 
             elif finding["type"] == "duplicate_ids":
                 for duplicate in finding["details"]:
-                    duplicate_id = duplicate["id"]
-                    row_indices = duplicate["row_indices"]
+                    # In our consolidated structure, the key is 'id_value' not 'id'
+                    duplicate_id = duplicate.get("id_value", duplicate.get("id", "Unknown"))
+                    # The rows field is 'rows', not 'row_indices'
+                    row_indices = duplicate.get("rows", [])
 
                     print(f"Found duplicate ID: {duplicate_id} in rows {row_indices}")
 
@@ -504,7 +508,7 @@ def generate_data_preview(file_path, json_findings):
                             {
                                 "type": "duplicate_id",
                                 "css_class": "duplicate-id",
-                                "explanation": f"Duplicate ID: {duplicate_id} appears {duplicate['count']} times",
+                                "explanation": f"Duplicate ID: {duplicate_id} appears {duplicate.get('count', len(row_indices))} times",
                             }
                         )
 
@@ -523,7 +527,7 @@ def generate_data_preview(file_path, json_findings):
                             suspicious_cells[cell_key] = {
                                 "type": "duplicate",
                                 "css_class": "cell-highlight-duplicate",
-                                "explanation": f"Duplicate ID {duplicate_id} appears {duplicate['count']} times",
+                                "explanation": f"Duplicate ID {duplicate_id} appears {duplicate.get('count', len(row_indices))} times",
                             }
 
             elif finding["type"] == "statistical_anomaly":
@@ -553,8 +557,12 @@ def generate_data_preview(file_path, json_findings):
 
             elif finding["type"] == "excel_row_movement":
                 for movement in finding["details"]:
-                    row_idx = int(movement["row"])  # Ensure it's an integer
-                    explanation = movement["evidence"]
+                    # The key is "data_row_index" in our new structure, not "row"
+                    row_idx = int(movement["data_row_index"])  # Ensure it's an integer
+                    
+                    # evidence is now a list in our consolidated structure
+                    evidence_items = movement.get("evidence", [])
+                    explanation = ", ".join(str(item) for item in evidence_items) if evidence_items else "Row movement detected"
 
                     print(f"Found Excel row movement evidence for row {row_idx}")
 
@@ -565,6 +573,8 @@ def generate_data_preview(file_path, json_findings):
                             "type": "excel_movement",
                             "css_class": "excel-movement",
                             "explanation": explanation,
+                            "confidence": movement.get("confidence", "low"),
+                            "probable_original_position": movement.get("probable_original_position", "Unknown")
                         }
                     )
 
