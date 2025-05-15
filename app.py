@@ -370,9 +370,11 @@ def generate_data_preview(file_path, json_findings):
             if finding["type"] == "sorting_anomaly":
                 for anomaly in finding["details"]:
                     row_idx = int(anomaly["row_index"])  # Ensure it's an integer
-                    id_val = anomaly.get("id_value", "Unknown")  # Use "id_value" key with fallback
-                    prev_id = anomaly.get("previous_id", None)   # Use with fallback
-                    
+                    id_val = anomaly.get(
+                        "id_value", "Unknown"
+                    )  # Use "id_value" key with fallback
+                    prev_id = anomaly.get("previous_id", None)  # Use with fallback
+
                     # These fields might not be present in our updated structure
                     sort_col = anomaly.get("sort_column", "Unknown")
                     sort_val = anomaly.get("sort_value", "Unknown")
@@ -493,7 +495,9 @@ def generate_data_preview(file_path, json_findings):
             elif finding["type"] == "duplicate_ids":
                 for duplicate in finding["details"]:
                     # In our consolidated structure, the key is 'id_value' not 'id'
-                    duplicate_id = duplicate.get("id_value", duplicate.get("id", "Unknown"))
+                    duplicate_id = duplicate.get(
+                        "id_value", duplicate.get("id", "Unknown")
+                    )
                     # The rows field is 'rows', not 'row_indices'
                     row_indices = duplicate.get("rows", [])
 
@@ -559,10 +563,14 @@ def generate_data_preview(file_path, json_findings):
                 for movement in finding["details"]:
                     # The key is "data_row_index" in our new structure, not "row"
                     row_idx = int(movement["data_row_index"])  # Ensure it's an integer
-                    
+
                     # evidence is now a list in our consolidated structure
                     evidence_items = movement.get("evidence", [])
-                    explanation = ", ".join(str(item) for item in evidence_items) if evidence_items else "Row movement detected"
+                    explanation = (
+                        ", ".join(str(item) for item in evidence_items)
+                        if evidence_items
+                        else "Row movement detected"
+                    )
 
                     print(f"Found Excel row movement evidence for row {row_idx}")
 
@@ -574,7 +582,9 @@ def generate_data_preview(file_path, json_findings):
                             "css_class": "excel-movement",
                             "explanation": explanation,
                             "confidence": movement.get("confidence", "low"),
-                            "probable_original_position": movement.get("probable_original_position", "Unknown")
+                            "probable_original_position": movement.get(
+                                "probable_original_position", "Unknown"
+                            ),
                         }
                     )
 

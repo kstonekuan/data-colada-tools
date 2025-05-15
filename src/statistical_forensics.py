@@ -576,4 +576,3 @@ class StatisticalForensics:
                 "error": f"Error analyzing inliers: {str(e)}",
                 "sample_size": len(values),
             }
-

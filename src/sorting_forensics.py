@@ -375,7 +375,9 @@ class SortingForensics:
         # Require a larger cluster size to reduce false positives
         filtered_out_of_sequence = []
         for condition, group_anomalies in condition_groups.items():
-            if len(group_anomalies) >= 5:  # Changed from 3 to 5 to reduce false positives
+            if (
+                len(group_anomalies) >= 5
+            ):  # Changed from 3 to 5 to reduce false positives
                 # This is a cluster of anomalies - keep them all
                 filtered_out_of_sequence.extend(group_anomalies)
 
@@ -395,7 +397,9 @@ class SortingForensics:
             else:
                 # If fewer than 5 anomalies, only keep those with very high position difference
                 for anomaly in group_anomalies:
-                    if anomaly.get("position_difference", 0) >= 7:  # Changed from 4 to 7
+                    if (
+                        anomaly.get("position_difference", 0) >= 7
+                    ):  # Changed from 4 to 7
                         # This is still significant even if isolated
                         filtered_out_of_sequence.append(anomaly)
 

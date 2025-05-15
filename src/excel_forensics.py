@@ -323,7 +323,10 @@ class ExcelForensics:
                     }
 
                     # If we can determine a probable original position
-                    if "probable_original_position" in evidence and evidence["probable_original_position"] is not None:
+                    if (
+                        "probable_original_position" in evidence
+                        and evidence["probable_original_position"] is not None
+                    ):
                         # Convert Excel row number to data row index
                         orig_excel_row = evidence["probable_original_position"]
                         orig_data_row = orig_excel_row - strategy["offset"]
