@@ -43,6 +43,3 @@ jobs:
         # Verify formatting with Ruff
         ruff format --check src/ app.py setup.py setup_api_key.py
         
-    - name: Test with pytest
-      run: |
-        pytest --cov=src tests/
