@@ -15,9 +15,6 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
-    - uses: astral-sh/ruff-action@v3
-      with:
-        src: "./src"
 
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v4
@@ -33,6 +30,9 @@ jobs:
         uv pip install pytest pytest-cov
         uv pip install -e .
         
+    - name: Install specific Ruff version
+      run: pip install ruff==0.11.13
+
     - name: Lint with Ruff
       run: |
         # Check with Ruff
