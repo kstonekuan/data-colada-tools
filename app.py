@@ -150,8 +150,6 @@ def index():
     return render_template("index.html", samples=samples)
 
 
-
-
 def generate_data_preview(file_path, json_findings):
     """Generate a HTML preview of the dataset with suspicious data highlighted."""
     # Determine file type and read data
